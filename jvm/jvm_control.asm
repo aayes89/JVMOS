@@ -319,17 +319,35 @@ op_lookupswitch:
 
 
 ; RETORNOS DE MÉTODOS (0xAC - 0xB1)
-
-
+; Retornos con valor de 32 bits (int, boolean, byte, char, short, array, ref)
 op_ireturn:
-op_lreturn:
-op_freturn:
-op_dreturn:
 op_areturn:
+op_freturn:
+    call vm_pop                       ; Extraer el resultado devuelto por el método
+    mov ebx, eax                      ; Preservar el valor de retorno en EBX
+
+    mov edx, [call_frame_ptr]
+    cmp edx, 0
+    je exit_main_process              ; Salto a etiqueta global sin punto
+
+    dec dword [call_frame_ptr]
+    mov edx, [call_frame_ptr]
+
+    ; Restaurar PC y Frame_Ptr del método llamador
+    mov esi, [call_frame_stack + edx * 8]
+    mov eax, [call_frame_stack + edx * 8 + 4]
+    mov [frame_ptr], eax
+    mov [pc_ptr], esi
+
+    mov eax, ebx                      ; Recuperar el valor de retorno
+    call vm_push                      ; Colocarlo en la pila del MÉTODO LLAMADOR
+    jmp jvm_dispatch_next
+
+; Retorno VOID (sin valor devuelto)
 op_return:
     mov edx, [call_frame_ptr]
     cmp edx, 0
-    je .exit_main_process            ; Si es el método main (call_frame_ptr == 0), FIN LIMPIO
+    je exit_main_process              ; Si es main, FIN
 
     dec dword [call_frame_ptr]
     mov edx, [call_frame_ptr]
@@ -341,7 +359,33 @@ op_return:
     mov [pc_ptr], esi
     jmp jvm_dispatch_next
 
-.exit_main_process:
+; Retornos de 64 bits (long / double)
+op_lreturn:
+op_dreturn:
+    call vm_pop                       ; Low dword
+    mov ecx, eax
+    call vm_pop                       ; High dword
+    mov ebx, eax
+
+    mov edx, [call_frame_ptr]
+    cmp edx, 0
+    je exit_main_process
+
+    dec dword [call_frame_ptr]
+    mov edx, [call_frame_ptr]
+
+    mov esi, [call_frame_stack + edx * 8]
+    mov eax, [call_frame_stack + edx * 8 + 4]
+    mov [frame_ptr], eax
+    mov [pc_ptr], esi
+
+    mov eax, ebx
+    call vm_push                      ; Reponer High dword en la nueva pila
+    mov eax, ecx
+    call vm_push                      ; Reponer Low dword en la nueva pila
+    jmp jvm_dispatch_next
+
+exit_main_process:
     push msg_dbg_halt
     call sys_serial_puts
     add esp, 4
@@ -349,9 +393,7 @@ op_return:
     call sys_hlt
     jmp .halt_loop
 
-
 ; AUXILIARES INTERNOS DE SALTO CORREGIDOS
-
 
 do_branch_16:
     mov ax, [esi]
