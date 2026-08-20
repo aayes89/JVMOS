@@ -131,7 +131,7 @@ dispatch_invoke:
     inc dword [call_frame_ptr]
 
     add dword [frame_ptr], 16                     ; Reservar espacio para variables locales
-    mov esi, eax                                 ; Asignar nuevo PC
+    mov esi, eax                                  ; Asignar nuevo PC
     mov [pc_ptr], esi
     jmp jvm_dispatch_next
 
@@ -154,7 +154,7 @@ dispatch_invoke:
 
     call jvm_invoke_native
 
-    ; CUALQUIER Native.sys() DEVUELVE INT -> vm_push(eax)
+    ; Todos los Native.sys() devuelven un int -> vm_push(eax)
     call vm_push
     jmp jvm_dispatch_next
 
@@ -237,7 +237,7 @@ find_method_bytecode:
     cmp ecx, 0
     jle .method_not_found
 
-    ; Guardar inicio del método (por si hay que saltarlo)
+    ; Guardar inicio del método
     mov edi, esi
 
     add esi, 2                  ; skip access_flags
