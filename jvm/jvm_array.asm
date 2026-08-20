@@ -27,7 +27,7 @@ global op_multianewarray
 ; SÍMBOLOS EXTERNOS
 extern vm_push
 extern vm_pop
-extern stack_ptr                   
+extern stack_ptr                    
 extern pc_ptr
 extern sys_kalloc
 extern check_null_pointer
@@ -196,7 +196,8 @@ op_baload:
     call vm_pop                     ; eax = array ref
     call check_null_pointer
     call check_array_bounds
-    movsx eax, byte [eax + ecx]
+    mov edx, eax
+    movsx eax, byte [edx + ecx]
     call vm_push
     jmp jvm_dispatch_next
 
@@ -206,7 +207,8 @@ op_caload:
     call vm_pop                     ; eax = array ref
     call check_null_pointer
     call check_array_bounds
-    movzx eax, word [eax + ecx * 2]
+    mov edx, eax
+    movzx eax, word [edx + ecx * 2]
     call vm_push
     jmp jvm_dispatch_next
 
@@ -216,7 +218,8 @@ op_saload:
     call vm_pop                     ; eax = array ref
     call check_null_pointer
     call check_array_bounds
-    movsx eax, word [eax + ecx * 2]
+    mov edx, eax
+    movsx eax, word [edx + ecx * 2]
     call vm_push
     jmp jvm_dispatch_next
 
