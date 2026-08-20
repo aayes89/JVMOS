@@ -98,16 +98,6 @@ public class Boot {
         Native.sys(Native.SYS_DRAW_STRING, 20, 30, "JVMOS TERMINAL INTERACTIVA - Escriba 'help' o 'startx'", 0);
         Native.sys(Native.SYS_DRAW_STRING, 20, 50, "-----------------------------------------------------", 0);
    
-
-        // Limpiar pantalla
-        Native.sys(Native.SYS_SET_COLOR, 0x00000000, 0, 0, 0);
-        Native.sys(Native.SYS_FILL_RECT, 0, 0, 1024, 768);
-		
-		// Terminal interactivo (shell)
-        Native.sys(Native.SYS_SET_COLOR, 0x0000FF00, 0, 0, 0);
-        Native.sys(Native.SYS_DRAW_STRING, 20, 30, "JVMOS TERMINAL INTERACTIVA - Escriba 'help' o 'startx'", 0);
-        Native.sys(Native.SYS_DRAW_STRING, 20, 50, "-----------------------------------------------------", 0);
-
 		// Parametros globales para el shell
         int cursorX = 85;
         int cursorY = 80;
