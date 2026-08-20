@@ -1,6 +1,5 @@
 [bits 32]
 
-; SÍMBOLOS GLOBALES (OPCODES DE LOAD Y STORE)
 global op_iload, op_lload, op_fload, op_dload, op_aload
 global op_iload_0, op_iload_1, op_iload_2, op_iload_3
 global op_lload_0, op_lload_1, op_lload_2, op_lload_3
@@ -15,7 +14,6 @@ global op_fstore_0, op_fstore_1, op_fstore_2, op_fstore_3
 global op_dstore_0, op_dstore_1, op_dstore_2, op_dstore_3
 global op_astore_0, op_astore_1, op_astore_2, op_astore_3
 
-; SÍMBOLOS EXTERNOS
 extern vm_push
 extern vm_pop
 extern local_vars
@@ -26,13 +24,11 @@ extern jvm_dispatch_next
 
 section .text
 
-; FAMILIA DE CARGAS (LOADS: 0x15 - 0x2D)
-
 op_iload:
 op_fload:
 op_aload:
     movzx ebx, byte [esi]
-    inc esi                         ; PC++
+    inc esi
     mov [pc_ptr], esi
     add ebx, [frame_ptr]
     call check_local_bounds
@@ -43,15 +39,15 @@ op_aload:
 op_lload:
 op_dload:
     movzx ebx, byte [esi]
-    inc esi                         ; PC++
+    inc esi
     mov [pc_ptr], esi
     add ebx, [frame_ptr]
     call check_local_bounds
-    mov eax, [local_vars + ebx * 4] ; High dword
+    mov eax, [local_vars + ebx * 4]
     call vm_push
     inc ebx
     call check_local_bounds
-    mov eax, [local_vars + ebx * 4] ; Low dword
+    mov eax, [local_vars + ebx * 4]
     call vm_push
     jmp jvm_dispatch_next
 
@@ -87,11 +83,11 @@ op_lload_3:
 do_lload:
     add ebx, [frame_ptr]
     call check_local_bounds
-    mov eax, [local_vars + ebx * 4] ; High
+    mov eax, [local_vars + ebx * 4]
     call vm_push
     inc ebx
     call check_local_bounds
-    mov eax, [local_vars + ebx * 4] ; Low
+    mov eax, [local_vars + ebx * 4]
     call vm_push
     jmp jvm_dispatch_next
 
@@ -127,20 +123,17 @@ op_dload_3:
 do_dload:
     add ebx, [frame_ptr]
     call check_local_bounds
-    mov eax, [local_vars + ebx * 4] ; High
+    mov eax, [local_vars + ebx * 4]
     call vm_push
     inc ebx
-    call check_local_bounds
-    mov eax, [local_vars + ebx * 4] ; Low
-    call vm_push
-    jmp jvm_dispatch_next
-
-op_aload_0:
-    mov ebx, [frame_ptr]
     call check_local_bounds
     mov eax, [local_vars + ebx * 4]
     call vm_push
     jmp jvm_dispatch_next
+
+op_aload_0:
+    mov ebx, 0
+    jmp do_aload
 op_aload_1:
     mov ebx, 1
     jmp do_aload
@@ -156,13 +149,11 @@ do_aload:
     call vm_push
     jmp jvm_dispatch_next
 
-; FAMILIA DE ALMACENAMIENTOS (STORES: 0x36 - 0x4E)
-
 op_istore:
 op_fstore:
 op_astore:
     movzx ebx, byte [esi]
-    inc esi                         ; PC++
+    inc esi
     mov [pc_ptr], esi
     add ebx, [frame_ptr]
     call check_local_bounds
@@ -173,16 +164,16 @@ op_astore:
 op_lstore:
 op_dstore:
     movzx ebx, byte [esi]
-    inc esi                         ; PC++
+    inc esi
     mov [pc_ptr], esi
     add ebx, [frame_ptr]
     inc ebx
     call check_local_bounds
-    call vm_pop                     ; Low dword
+    call vm_pop
     mov [local_vars + ebx * 4], eax
     dec ebx
     call check_local_bounds
-    call vm_pop                     ; High dword
+    call vm_pop
     mov [local_vars + ebx * 4], eax
     jmp jvm_dispatch_next
 
@@ -219,11 +210,11 @@ do_lstore:
     add ebx, [frame_ptr]
     inc ebx
     call check_local_bounds
-    call vm_pop                     ; Low dword
+    call vm_pop
     mov [local_vars + ebx * 4], eax
     dec ebx
     call check_local_bounds
-    call vm_pop                     ; High dword
+    call vm_pop
     mov [local_vars + ebx * 4], eax
     jmp jvm_dispatch_next
 
@@ -260,20 +251,17 @@ do_dstore:
     add ebx, [frame_ptr]
     inc ebx
     call check_local_bounds
-    call vm_pop                     ; Low dword
+    call vm_pop
     mov [local_vars + ebx * 4], eax
     dec ebx
     call check_local_bounds
-    call vm_pop                     ; High dword
+    call vm_pop
     mov [local_vars + ebx * 4], eax
     jmp jvm_dispatch_next
 
 op_astore_0:
-    call vm_pop
-    mov ebx, [frame_ptr]
-    call check_local_bounds
-    mov [local_vars + ebx * 4], eax
-    jmp jvm_dispatch_next
+    mov ebx, 0
+    jmp do_astore
 op_astore_1:
     mov ebx, 1
     jmp do_astore
