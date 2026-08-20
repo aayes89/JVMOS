@@ -95,17 +95,17 @@ dispatch_invoke:
     inc ebx                         ; Skip Tag
     add ebx, 2                      ; Skip Length -> Texto UTF-8 ASCII
 
-    ; 1. Constructor Object <init>
+    ; Constructor Object <init>
     mov eax, [ebx]
     cmp eax, 0x696E693C             ; "<ini"
     je .done_invoke
 
-    ; 2. Verificar si es la Syscall Nativa "sys"
+    ; Verificar si es la Syscall Nativa "sys"
     and eax, 0x00FFFFFF             ; 's' 'y' 's'
     cmp eax, 0x00737973
     je .is_native_sys
 
-    ; 3. INVOCACIÓN DE MÉTODO JAVA REAL EN LA MISMA CLASE
+    ; INVOCACIÓN DE MÉTODO JAVA REAL EN LA MISMA CLASE
     inc edx                         ; Skip Tag
     mov ax, [edx]                   ; Length
     xchg al, ah
@@ -177,7 +177,8 @@ dispatch_invoke:
 .done_invoke:
     jmp jvm_dispatch_next
 
-; PARSER DETERMINISTA DEL .CLASS SEGÚN ESPECIFICACIÓN JAVA
+; PARSER DEL .CLASS PARA ENCONTRAR MÉTODOS
+
 find_method_bytecode:
     push ebp
     mov ebp, esp
@@ -187,121 +188,143 @@ find_method_bytecode:
     push esi
     push edi
 
-    ; Usar directamente cp_end_ptr (Fin exacto de Constant Pool)
     mov esi, [cp_end_ptr]
-    add esi, 6                      ; Skip access_flags(2) + this_class(2) + super_class(2)
+    add esi, 6                  ; access_flags + this_class + super_class
 
-    ; Skip Interfaces
+    ; --- Skip Interfaces ---
     mov ax, [esi]
     xchg al, ah
     movzx eax, ax
     add esi, 2
-    shl eax, 1                      ; interfaces_count * 2 bytes
+    shl eax, 1
     add esi, eax
 
-    ; Skip Fields
+    ; --- Skip Fields ---
     mov ax, [esi]
     xchg al, ah
     movzx ecx, ax
     add esi, 2
-
 .skip_fields_loop:
     cmp ecx, 0
     jle .fields_done
-    add esi, 6                      ; access_flags(2) + name_index(2) + descriptor_index(2)
-    mov ax, [esi]                   ; attributes_count
+    add esi, 6                  ; access + name + descriptor
+    mov ax, [esi]               ; attributes_count
     xchg al, ah
     movzx eax, ax
     add esi, 2
-.skip_f_attrs_loop:
+.skip_f_attrs:
     cmp eax, 0
     je .next_field
-    add esi, 2                      ; attribute_name_index
+    add esi, 2
     mov ebx, [esi]
-    bswap ebx                       ; attribute_length
+    bswap ebx
     add esi, 4
     add esi, ebx
     dec eax
-    jmp .skip_f_attrs_loop
+    jmp .skip_f_attrs
 .next_field:
     dec ecx
     jmp .skip_fields_loop
-
 .fields_done:
-    ; Methods Count
+
+    ; --- Methods ---
     mov ax, [esi]
     xchg al, ah
-    movzx ecx, ax                   ; ecx = methods_count
+    movzx ecx, ax               ; methods_count
     add esi, 2
 
 .search_methods_loop:
     cmp ecx, 0
     jle .method_not_found
 
-    mov ax, [esi]
-    xchg al, ah
-    movzx ebx, ax                   ; EBX = access_flags (main = 0x0009)
-    add esi, 2                      ; Skip access_flags(2)
+    ; Guardar inicio del método (por si hay que saltarlo)
+    mov edi, esi
 
-    mov ax, [esi]                   ; name_index del método
-    xchg al, ah
-    movzx eax, ax
-    add esi, 4                      ; Skip name_index(2) + descriptor_index(2)
-
-    mov ax, [esi]                   ; attributes_count del método
-    xchg al, ah
-    movzx edx, ax                   ; EDX = número de atributos del método
-    add esi, 2                      ; ESI apunta al inicio de los atributos
-
-    ; Comprobar si este método es public static (0x0009) -> 'main'
-    cmp ebx, 0x0009
-    je .parse_code_attribute
-
-.skip_method_attrs:
-    cmp edx, 0
-    je .next_method_step
-    add esi, 2                      ; attribute_name_index
-    mov eax, [esi]                  ; attribute_length
-    bswap eax
-    add esi, 4
-    add esi, eax                    ; saltar el cuerpo del atributo
-    dec edx
-    jmp .skip_method_attrs
-
-.parse_code_attribute:
-    ; Buscar el atributo cuyo nombre sea "Code"
-.search_code_attr_loop:
-    cmp edx, 0
-    je .next_method_step
-
-    mov ax, [esi]                   ; attribute_name_index
+    add esi, 2                  ; skip access_flags
+    mov ax, [esi]               ; name_index
     xchg al, ah
     movzx eax, ax
-    
-    ; Obtener la cadena UTF-8 del nombre del atributo desde cp_offsets
+    add esi, 4                  ; skip name + descriptor
+
+    ; Obtener el nombre real del método desde el Constant Pool
     mov ebx, [cp_offsets + eax * 4]
-    add ebx, 3                      ; Skip Tag(1) + Length(2)
-    
-    ; Comparar primeros 4 bytes con "Code" (0x65646F43)
-    mov eax, [ebx]
-    cmp eax, 0x65646F43
-    je .found_code_attribute
+    cmp ebx, 0
+    je .skip_this_method
+    inc ebx                     ; skip tag
+    mov ax, [ebx]               ; length
+    xchg al, ah
+    movzx edx, ax               ; EDX = longitud del nombre en el class
+    add ebx, 2                  ; EBX = texto UTF-8
 
-    ; Si no es "Code", saltar este atributo
-    add esi, 2                      ; attribute_name_index
-    mov eax, [esi]                  ; attribute_length
+    ; Comparar con el nombre buscado
+    mov eax, [ebp + 8]          ; longitud buscada
+    cmp eax, edx
+    jne .skip_this_method
+
+    ; Comparación byte a byte
+    push esi
+    push edi
+    mov esi, [ebp + 12]          ; nombre buscado
+    mov edi, ebx                 ; nombre en el class
+    mov ecx, edx
+    repe cmpsb
+    pop edi
+    pop esi
+    jne .skip_this_method
+
+    ; === Nombre coincide → buscar atributo "Code" ===
+    mov ax, [esi]               ; attributes_count
+    xchg al, ah
+    movzx edx, ax
+    add esi, 2
+
+.search_code:
+    cmp edx, 0
+    je .skip_this_method
+
+    mov ax, [esi]               ; attribute_name_index
+    xchg al, ah
+    movzx eax, ax
+
+    mov ebx, [cp_offsets + eax * 4]
+    add ebx, 3                  ; skip tag + length
+    mov eax, [ebx]
+    cmp eax, 0x65646F43         ; "Code"
+    je .found_code
+
+    ; Saltar atributo
+    add esi, 2
+    mov eax, [esi]
     bswap eax
     add esi, 4
-    add esi, eax                    ; saltar cuerpo del atributo
+    add esi, eax
     dec edx
-    jmp .search_code_attr_loop
+    jmp .search_code
 
-.found_code_attribute:
-    add esi, 14                     ; Apunta al byte 0 del bytecode
-    mov eax, esi                    ; Retornar dirección exacta
+.found_code:
+    add esi, 14                 ; apunta al primer bytecode
+    mov eax, esi
     jmp .find_done
 
-.next_method_step:
+.skip_this_method:
+    ; Saltar todos los atributos de este método
+    mov esi, edi
+    add esi, 6                  ; access + name + descriptor
+    mov ax, [esi]
+    xchg al, ah
+    movzx edx, ax
+    add esi, 2
+.skip_attrs:
+    cmp edx, 0
+    je .next_method
+    add esi, 2
+    mov eax, [esi]
+    bswap eax
+    add esi, 4
+    add esi, eax
+    dec edx
+    jmp .skip_attrs
+.next_method:
     dec ecx
     jmp .search_methods_loop
 
