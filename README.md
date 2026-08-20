@@ -1,6 +1,6 @@
 <img width="1254" height="1254" alt="theLogo" src="https://github.com/user-attachments/assets/caf5a26c-186d-4e8b-a049-af27ffd08a1f" />
 
-**JVMOS** es un sistema operativo experimental de 32 bits desarrollado en **Ensamblador x86** que ejecuta una **mini-JVM personalizada** directamente sobre el hardware (*Baremetal*), sin depender de Linux, Windows ni de la JVM estándar de Oracle.
+**JVMOS** es un sistema operativo experimental de 32 bits desarrollado en **Ensamblador x86** que ejecuta una **mini-JVM personalizada** directamente sobre el hardware (*Baremetal*), sin depender de Linux, Windows ni de la JVM estándar de Oracle. Basado en otro proyecto escrito en ASM y C durante la carrera de Ingeniería Informática.
 
 ---
 
