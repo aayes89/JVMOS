@@ -19,7 +19,7 @@
 
 | Comando | Descripción |
 | :--- | :--- |
-| `startx` | Inicia el entorno gráfico VESA con el fondo de pantalla fractal |
+| `startx` | Inicia el entorno gráfico VESA con el fondo de pantalla en gradiente |
 | `time` / `date` | Muestra la fecha (`DD/MM/YYYY`) y hora (`HH:MM:SS`) del hardware RTC |
 | `ver` | Muestra la versión del Kernel y créditos del autor |
 | `clear` / `cls` | Limpia la pantalla de la consola |
