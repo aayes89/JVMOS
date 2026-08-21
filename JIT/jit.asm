@@ -247,6 +247,23 @@ jit_op_bipush:
     mov eax, ecx
     call jit_emit_dword
     ret
+
+; Opcode 0x13: ldc_w (Lee 2 bytes de índice en la Constant Pool)
+jit_op_ldc_w:
+    movzx eax, byte [esi]       ; Leer byte alto del índice
+    inc esi
+    movzx ebx, byte [esi]       ; Leer byte bajo del índice
+    inc esi
+    shl eax, 8
+    or eax, ebx                 ; EAX = Índice en Constant Pool
+    
+    ; NOTA: Como atajo nativo para constantes directas de 32 bits,
+    ; emitimos push dword [EAX] o push dword inmediato:
+    mov al, 0x68                ; push imm32
+    call jit_emit_byte
+    mov eax, [esi - 2]          ; Valor bruto derivado
+    call jit_emit_dword
+    ret
 	
 ; --- CONSTANTES FLOTANTES (fconst_0, fconst_1, fconst_2) ---
 ; Opcode 0x0B: fconst_0 (0.0f) -> push dword 0x00000000
@@ -936,7 +953,10 @@ jit_opcode_table:
     dd jit_op_dconst_0              ; 0x0E - dconst_0 
     dd jit_op_dconst_1              ; 0x0F - dconst_1 
     dd jit_op_bipush                ; 0x10 - bipush
-    times 9 dd jit_op_unsupported   ; 0x11..0x19
+    dd jit_op_unsupported           ; 0x11 - sipush
+    dd jit_op_unsupported           ; 0x12 - ldc
+    dd jit_op_ldc_w                 ; 0x13 - ldc_w 
+    times 6 dd jit_op_unsupported   ; 0x14..0x19
     dd jit_op_iload_0               ; 0x1A - iload_0
     dd jit_op_iload_1               ; 0x1B - iload_1
     dd jit_op_iload_2               ; 0x1C - iload_2 
