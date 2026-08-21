@@ -180,6 +180,34 @@ jit_op_iconst_1:
     call jit_emit_byte
     ret
 
+jit_op_iconst_2:
+    mov al, 0x6A                ; push 2
+    call jit_emit_byte
+    mov al, 0x02
+    call jit_emit_byte
+    ret
+
+jit_op_iconst_3:
+    mov al, 0x6A                ; push 3
+    call jit_emit_byte
+    mov al, 0x03
+    call jit_emit_byte
+    ret
+
+jit_op_iconst_4:
+    mov al, 0x6A                ; push 4
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    ret
+
+jit_op_iconst_5:
+    mov al, 0x6A                ; push 5
+    call jit_emit_byte
+    mov al, 0x05
+    call jit_emit_byte
+    ret
+
 jit_op_bipush:
     movzx ecx, byte [esi]
     inc esi
@@ -447,8 +475,12 @@ jit_opcode_table:
     dd jit_op_nop                   ; 0x00
     dd jit_op_aconst_null		    ; 0x01
 	dd jit_op_unsupported			; 0x02
-    dd jit_op_iconst_0              ; 0x03
-    dd jit_op_iconst_1              ; 0x04
+	dd jit_op_iconst_0              ; 0x03 - iconst_0
+    dd jit_op_iconst_1              ; 0x04 - iconst_1
+    dd jit_op_iconst_2              ; 0x05 - iconst_2
+    dd jit_op_iconst_3              ; 0x06 - iconst_3
+    dd jit_op_iconst_4              ; 0x07 - iconst_4
+    dd jit_op_iconst_5              ; 0x08 - iconst_5
     times 11 dd jit_op_unsupported  ; 0x05..0x0F
     dd jit_op_bipush                ; 0x10
     times 9 dd jit_op_unsupported   ; 0x11..0x19
