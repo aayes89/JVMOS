@@ -35,6 +35,7 @@ section .text
     global jit_test_phase6
     
     extern sys_serial_puts
+	extern cp_base_ptr
 
 ; ----------------------------------------------------------------------------
 ; EMISORES DE CÓDIGO Y NUCLEO (Fase 1)
@@ -238,30 +239,54 @@ jit_op_lconst_1:
     mov al, 0x01
     call jit_emit_byte
     ret
-    
+
+; Opcode 0x10 bipush    
 jit_op_bipush:
-    movzx ecx, byte [esi]
+    movsx eax, byte [esi]       ; Lectura con extensión de signo (8 a 32 bits)
     inc esi
-    mov al, 0x68
+    push eax
+    mov al, 0x68                ; push imm32
     call jit_emit_byte
-    mov eax, ecx
+    pop eax
     call jit_emit_dword
     ret
 
-; Opcode 0x13: ldc_w (Lee 2 bytes de índice en la Constant Pool)
-jit_op_ldc_w:
-    movzx eax, byte [esi]       ; Leer byte alto del índice
+; Opcode 0x11: sipush <short> (Lee 16-bit Big-Endian de la JVM y extiende a 32-bit)
+jit_op_sipush:
+    movzx eax, byte [esi]       ; Byte alto
     inc esi
-    movzx ebx, byte [esi]       ; Leer byte bajo del índice
+    movzx ebx, byte [esi]       ; Byte bajo
     inc esi
     shl eax, 8
-    or eax, ebx                 ; EAX = Índice en Constant Pool
-    
-    ; NOTA: Como atajo nativo para constantes directas de 32 bits,
-    ; emitimos push dword [EAX] o push dword inmediato:
+    or eax, ebx
+    movsx eax, ax               ; Extensión de signo de 16 a 32 bits
+
+    push eax
     mov al, 0x68                ; push imm32
     call jit_emit_byte
-    mov eax, [esi - 2]          ; Valor bruto derivado
+    pop eax
+    call jit_emit_dword
+    ret
+	
+; Opcode 0x13: ldc_w (Lee 2 bytes de índice en la Constant Pool)
+jit_op_ldc_w:
+    movzx eax, byte [esi]       ; Byte alto del índice
+    inc esi
+    movzx ebx, byte [esi]       ; Byte bajo del índice
+    inc esi
+    shl eax, 8
+    or eax, ebx                 ; EAX = Index en Constant Pool
+
+    ; Obtener la dirección física de la entrada en la Constant Pool:
+    ; cp_entry_addr = cp_base_ptr + (index * 4)
+    mov ebx, [cp_base_ptr]
+    mov eax, [ebx + eax * 4]    ; EAX = Valor entero/float de 32 bits guardado
+
+    ; Emitir: push imm32 (0x68 <DWORD>)
+    push eax                    ; Preservar valor de la constante
+    mov al, 0x68
+    call jit_emit_byte
+    pop eax                     ; Restaurar valor
     call jit_emit_dword
     ret
 	
@@ -953,7 +978,7 @@ jit_opcode_table:
     dd jit_op_dconst_0              ; 0x0E - dconst_0 
     dd jit_op_dconst_1              ; 0x0F - dconst_1 
     dd jit_op_bipush                ; 0x10 - bipush
-    dd jit_op_unsupported           ; 0x11 - sipush
+    dd jit_op_sipush	            ; 0x11 - sipush
     dd jit_op_unsupported           ; 0x12 - ldc
     dd jit_op_ldc_w                 ; 0x13 - ldc_w 
     times 6 dd jit_op_unsupported   ; 0x14..0x19
