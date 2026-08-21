@@ -320,6 +320,12 @@ jit_op_ldc_w:
     call jit_emit_dword
     ret
 
+; Opcode 0xB7: invokespecial <method_index_16bit>
+jit_op_invokespecial:
+    add esi, 2                  ; Ignorar índice del CP (Constructor vacío Object.<init>)
+    ; Para constructores base simples, no se requiere emitir nada a nivel x86 (NOP)
+    ret
+	
 ; Opcode 0xB8: invokestatic <method_index_16bit>
 jit_op_invokestatic:
     add esi, 2                  ; Saltar el índice de 16-bit del CP
@@ -1059,6 +1065,39 @@ jit_op_ifle:
     sub eax, ebx
     call jit_emit_dword
     ret
+
+; Opcode 0x9C: ifge <branchbyte1, branchbyte2>
+jit_op_ifge:
+    movzx eax, byte [esi]       ; Byte alto del offset
+    inc esi
+    movzx ebx, byte [esi]       ; Byte bajo del offset
+    inc esi
+    shl eax, 8
+    or eax, ebx
+    movsx eax, ax               ; Extensión de signo 16 a 32 bits
+
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x83                ; cmp eax, 0
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x00
+    call jit_emit_byte
+
+    mov al, 0x0F                ; JGE rel32 (0x0F 0x8D)
+    call jit_emit_byte
+    mov al, 0x8D
+    call jit_emit_byte
+
+    mov eax, [loop_start_addr]
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    ret
+
+
 	
 ; Helper genérico para emitir: pop ebx, pop eax, cmp eax, ebx, jcc rel32
 jit_emit_icmp_branch:
@@ -1150,7 +1189,29 @@ jit_op_iastore:
     mov al, 0x88
     call jit_emit_byte
     ret
+	
+; Opcode 0x56: sastore (Guardar short en short[])
+jit_op_sastore:
+    mov al, 0x58                ; pop eax (value)
+    call jit_emit_byte
+    mov al, 0x59                ; pop ecx (index)
+    call jit_emit_byte
+    mov al, 0x5D                ; pop ebp -> cambiamos a ebx para base
+    ; Usamos ebx como base del array
+    mov al, 0x5B                ; pop ebx (arrayref)
+    call jit_emit_byte
 
+    ; Emitir: mov [ebx + ecx * 2], ax (Bytes x86: 0x66 0x89 0x04 0x4B)
+    mov al, 0x66                ; Operando de 16 bits
+    call jit_emit_byte
+    mov al, 0x89
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    mov al, 0x4B
+    call jit_emit_byte
+    ret
+	
 ; Opcode 0xBE: arraylength
 jit_op_arraylength:
     mov al, 0x58                ; pop eax (arrayref)
@@ -1452,7 +1513,7 @@ jit_opcode_table:
     dd jit_op_unsupported           ; 0x14 - ldc2_w
     dd jit_op_iload                 ; 0x15 - iload
     times 3 dd jit_op_unsupported   ; 0x16..0x18
-	dd jit_op_aload					; 0x19 - aload
+    dd jit_op_aload                 ; 0x19 - aload
     dd jit_op_iload_0               ; 0x1A - iload_0
     dd jit_op_iload_1               ; 0x1B - iload_1
     dd jit_op_iload_2               ; 0x1C - iload_2 
@@ -1487,8 +1548,9 @@ jit_opcode_table:
     dd jit_op_astore_4              ; 0x4B - astore_4
     dd jit_op_astore_5              ; 0x4C - astore_5
     times 2 dd jit_op_unsupported   ; 0x4D..0x4E
-    dd jit_op_iastore               ; 0x4F - iastore 
-    times 7 dd jit_op_unsupported   ; 0x50..0x56
+    dd jit_op_iastore               ; 0x4F - iastore
+    times 6 dd jit_op_unsupported   ; 0x50..0x55
+    dd jit_op_sastore               ; 0x56 - sastore
     dd jit_op_pop                   ; 0x57 - pop 
     dd jit_op_unsupported           ; 0x58 - pop2
     dd jit_op_dup                   ; 0x59 - dup
@@ -1505,7 +1567,7 @@ jit_opcode_table:
     dd jit_op_imul                  ; 0x68 - imul 
     dd jit_op_unsupported           ; 0x69 - lmul
     dd jit_op_unsupported           ; 0x6A - fmul
-    dd jit_op_unsupported           ; 0x6B - dmul
+    dd jit_op_imul                  ; 0x6B - dmul/imul
     dd jit_op_idiv                  ; 0x6C - idiv 
     dd jit_op_unsupported           ; 0x6D - ldiv
     dd jit_op_unsupported           ; 0x6E - fdiv
@@ -1538,8 +1600,10 @@ jit_opcode_table:
     times 6 dd jit_op_unsupported   ; 0x93..0x98
     dd jit_op_ifeq                  ; 0x99 - ifeq
     dd jit_op_ifne                  ; 0x9A - ifne 
-    times 3 dd jit_op_unsupported   ; 0x9B..0x9D
-	dd jit_op_ifle					; 0x9E - ifle
+    dd jit_op_unsupported           ; 0x9B - iflt
+    dd jit_op_ifge                  ; 0x9C - ifge 
+    dd jit_op_unsupported           ; 0x9D - ifgt
+    dd jit_op_ifle                  ; 0x9E - ifle
     dd jit_op_if_icmpeq             ; 0x9F - if_icmpeq
     dd jit_op_if_icmpne             ; 0xA0 - if_icmpne 
     dd jit_op_if_icmplt             ; 0xA1 - if_icmplt 
@@ -1552,7 +1616,8 @@ jit_opcode_table:
     dd jit_op_ireturn               ; 0xAC - ireturn
     times 4 dd jit_op_unsupported   ; 0xAD..0xB0
     dd jit_op_return                ; 0xB1 - return
-    times 6 dd jit_op_unsupported   ; 0xB2..0xB7
+    times 5 dd jit_op_unsupported   ; 0xB2..0xB6
+    dd jit_op_invokespecial         ; 0xB7 - invokespecial 
     dd jit_op_invokestatic          ; 0xB8 - invokestatic
     times 3 dd jit_op_unsupported   ; 0xB9..0xBB
     dd jit_op_newarray              ; 0xBC - newarray
