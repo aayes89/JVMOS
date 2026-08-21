@@ -755,6 +755,8 @@ msg_err_unsupported_op: db 13, 10, "[JIT Panic] Unsupported Opcode encountered!"
 msg_panic_head: db 13, 10, "[JIT Panic] Unsupported Opcode: 0x", 0
 hex_byte_str:   db "00!", 13, 10, 0
 
+section .rodata
+align 4
 jit_opcode_table:
     dd jit_op_nop                   ; 0x00 - nop
     dd jit_op_aconst_null           ; 0x01 - aconst_null
@@ -791,15 +793,45 @@ jit_opcode_table:
     dd jit_op_astore_3              ; 0x4A - astore_3 
     times 12 dd jit_op_unsupported  ; 0x4B..0x56
     dd jit_op_pop                   ; 0x57 - pop 
-    dd jit_op_unsupported           ; 0x58
+    dd jit_op_unsupported           ; 0x58 - pop2
     dd jit_op_dup                   ; 0x59 - dup 
     times 6 dd jit_op_unsupported   ; 0x5A..0x5F
     dd jit_op_iadd                  ; 0x60 - iadd
-    times 3 dd jit_op_unsupported   ; 0x61..0x63
+    dd jit_op_unsupported           ; 0x61 - ladd
+    dd jit_op_unsupported           ; 0x62 - fadd
+    dd jit_op_unsupported           ; 0x63 - dadd
     dd jit_op_isub                  ; 0x64 - isub 
-    times 3 dd jit_op_unsupported   ; 0x65..0x67
+    dd jit_op_unsupported           ; 0x65 - lsub
+    dd jit_op_unsupported           ; 0x66 - fsub
+    dd jit_op_unsupported           ; 0x67 - dsub
     dd jit_op_imul                  ; 0x68 - imul 
-    times 54 dd jit_op_unsupported  ; 0x69..0x9E
+    dd jit_op_unsupported           ; 0x69 - lmul
+    dd jit_op_unsupported           ; 0x6A - fmul
+    dd jit_op_unsupported           ; 0x6B - dmul
+    dd jit_op_idiv                  ; 0x6C - idiv 
+    dd jit_op_unsupported           ; 0x6D - ldiv
+    dd jit_op_unsupported           ; 0x6E - fdiv
+    dd jit_op_unsupported           ; 0x6F - ddiv
+    dd jit_op_irem                  ; 0x70 - irem 
+    dd jit_op_unsupported           ; 0x71 - lrem
+    dd jit_op_unsupported           ; 0x72 - frem
+    dd jit_op_unsupported           ; 0x73 - drem
+    dd jit_op_ineg                  ; 0x74 - ineg 
+    times 3 dd jit_op_unsupported   ; 0x75..0x77
+    dd jit_op_ishl                  ; 0x78 - ishl 
+    dd jit_op_unsupported           ; 0x79 - lshl
+    dd jit_op_ishr                  ; 0x7A - ishr 
+    dd jit_op_unsupported           ; 0x7B - lshr
+    dd jit_op_iushr                 ; 0x7C - iushr 
+    dd jit_op_unsupported           ; 0x7D - lushr
+    dd jit_op_iand                  ; 0x7E - iand 
+    dd jit_op_unsupported           ; 0x7F - land
+    dd jit_op_ior                   ; 0x80 - ior  
+    dd jit_op_unsupported           ; 0x81 - lor
+    dd jit_op_ixor                  ; 0x82 - ixor 
+    dd jit_op_unsupported           ; 0x83 - lxor
+    dd jit_op_iinc                  ; 0x84 - iinc
+    times 26 dd jit_op_unsupported  ; 0x85..0x9E
     dd jit_op_if_icmpeq             ; 0x9F - if_icmpeq
     times 7 dd jit_op_unsupported   ; 0xA0..0xA6
     dd jit_op_goto                  ; 0xA7 - goto
