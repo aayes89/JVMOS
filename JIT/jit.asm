@@ -36,6 +36,9 @@ section .text
     
     extern sys_serial_puts
 	extern cp_base_ptr
+	; Símbolos de Syscalls del Kernel (de jvm_native.asm / sys_api.asm)	
+	extern sys_arg_id, sys_arg_a, sys_arg_b, sys_arg_c, sys_arg_d
+	extern jvm_invoke_native
 
 ; ----------------------------------------------------------------------------
 ; EMISORES DE CÓDIGO Y NUCLEO (Fase 1)
@@ -267,6 +270,28 @@ jit_op_sipush:
     pop eax
     call jit_emit_dword
     ret
+
+; Opcode 0x12: ldc (Lee 1 byte de índice de la Constant Pool)
+jit_op_ldc:
+    movzx eax, byte [esi]       ; Leer índice de 8 bits de la Constant Pool
+    inc esi                     ; Consumir el byte del índice
+
+    mov ebx, [cp_base_ptr]
+    test ebx, ebx
+    jz .fallback_zero
+    mov eax, [ebx + eax * 4]    ; Extraer constante de 32 bits real
+    jmp .emit_val
+
+.fallback_zero:
+    xor eax, eax
+
+.emit_val:
+    push eax
+    mov al, 0x68                ; push imm32 (0x68 <DWORD>)
+    call jit_emit_byte
+    pop eax
+    call jit_emit_dword
+    ret
 	
 ; Opcode 0x13: ldc_w (Lee 2 bytes de índice en la Constant Pool)
 jit_op_ldc_w:
@@ -292,6 +317,60 @@ jit_op_ldc_w:
     call jit_emit_byte
     pop eax
     call jit_emit_dword
+    ret
+
+; Opcode 0xB8: invokestatic <method_index_16bit>
+jit_op_invokestatic:
+    add esi, 2                  ; Saltar el índice de 16-bit del CP
+
+    ; Desapilar argumentos hacia variables globales del Kernel
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xA3                ; mov [sys_arg_d], eax
+    call jit_emit_byte
+    mov eax, sys_arg_d
+    call jit_emit_dword
+
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xA3                ; mov [sys_arg_c], eax
+    call jit_emit_byte
+    mov eax, sys_arg_c
+    call jit_emit_dword
+
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xA3                ; mov [sys_arg_b], eax
+    call jit_emit_byte
+    mov eax, sys_arg_b
+    call jit_emit_dword
+
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xA3                ; mov [sys_arg_a], eax
+    call jit_emit_byte
+    mov eax, sys_arg_a
+    call jit_emit_dword
+
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xA3                ; mov [sys_arg_id], eax
+    call jit_emit_byte
+    mov eax, sys_arg_id
+    call jit_emit_dword
+
+    ; Emitir llamada directa a jvm_invoke_native del Kernel
+    mov al, 0xE8                ; call rel32
+    call jit_emit_byte
+    mov eax, jvm_invoke_native
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+
+    ; Volver a empujar el resultado dejado en EAX a la pila nativa
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
     ret
 	
 ; --- CONSTANTES FLOTANTES (fconst_0, fconst_1, fconst_2) ---
@@ -786,6 +865,68 @@ jit_op_iinc:
     call jit_emit_byte
     ret
     
+; Opcode 0x85: i2l (Int 32-bit -> Long 64-bit)
+jit_op_i2l:
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x99                ; cdq (EDX = Signo, EAX = Valor)
+    call jit_emit_byte
+    mov al, 0x52                ; push edx (Parte alta)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax (Parte baja)
+    call jit_emit_byte
+    ret
+
+; Opcode 0x88: l2i (Long 64-bit -> Int 32-bit)
+jit_op_l2i:
+    mov al, 0x58                ; pop eax (Low - se conserva)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (High - se descarta)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x91: i2b (Int -> Byte con signo)
+jit_op_i2b:
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x0F                ; movsx eax, al (Bytes: 0x0F 0xBE 0xC0)
+    call jit_emit_byte
+    mov al, 0xBE
+    call jit_emit_byte
+    mov al, 0xC0
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x92: i2c (Int -> Char UTF-16)
+jit_op_i2c:
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x0F                ; movzx eax, ax (Bytes: 0x0F 0xB7 0xC0)
+    call jit_emit_byte
+    mov al, 0xB7
+    call jit_emit_byte
+    mov al, 0xC0
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Swap de pila (0x5F: swap) 
+jit_op_swap:
+    mov al, 0x58                ; pop eax (val1)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (val2)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    mov al, 0x53                ; push ebx
+    call jit_emit_byte
+    ret	
+	
 jit_op_dup:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
@@ -989,8 +1130,8 @@ jit_opcode_table:
     dd jit_op_dconst_0              ; 0x0E - dconst_0 
     dd jit_op_dconst_1              ; 0x0F - dconst_1 
     dd jit_op_bipush                ; 0x10 - bipush
-    dd jit_op_sipush	            ; 0x11 - sipush
-    dd jit_op_unsupported           ; 0x12 - ldc
+    dd jit_op_sipush                ; 0x11 - sipush
+    dd jit_op_ldc		            ; 0x12 - ldc
     dd jit_op_ldc_w                 ; 0x13 - ldc_w 
     times 6 dd jit_op_unsupported   ; 0x14..0x19
     dd jit_op_iload_0               ; 0x1A - iload_0
@@ -1025,8 +1166,9 @@ jit_opcode_table:
     times 10 dd jit_op_unsupported  ; 0x4D..0x56
     dd jit_op_pop                   ; 0x57 - pop 
     dd jit_op_unsupported           ; 0x58 - pop2
-    dd jit_op_dup                   ; 0x59 - dup 
-    times 6 dd jit_op_unsupported   ; 0x5A..0x5F
+    dd jit_op_dup                   ; 0x59 - dup
+    times 5 dd jit_op_unsupported   ; 0x5A..0x5E 
+    dd jit_op_swap                  ; 0x5F - swap 
     dd jit_op_iadd                  ; 0x60 - iadd
     dd jit_op_unsupported           ; 0x61 - ladd
     dd jit_op_unsupported           ; 0x62 - fadd
@@ -1062,14 +1204,22 @@ jit_opcode_table:
     dd jit_op_ixor                  ; 0x82 - ixor 
     dd jit_op_unsupported           ; 0x83 - lxor
     dd jit_op_iinc                  ; 0x84 - iinc
-    times 26 dd jit_op_unsupported  ; 0x85..0x9E
+    dd jit_op_i2l                   ; 0x85 - i2l  
+    times 2 dd jit_op_unsupported   ; 0x86..0x87
+    dd jit_op_l2i                   ; 0x88 - l2i 
+    times 8 dd jit_op_unsupported   ; 0x89..0x90
+    dd jit_op_i2b                   ; 0x91 - i2b 
+    dd jit_op_i2c                   ; 0x92 - i2c 
+    times 12 dd jit_op_unsupported  ; 0x93..0x9E (RELLENO FIJO)
     dd jit_op_if_icmpeq             ; 0x9F - if_icmpeq
     times 7 dd jit_op_unsupported   ; 0xA0..0xA6
     dd jit_op_goto                  ; 0xA7 - goto
     times 4 dd jit_op_unsupported   ; 0xA8..0xAB
-    dd jit_op_ireturn               ; 0xAC - ireturn
+    dd jit_op_ireturn               ; 0xAC - ireturn (RECUPERADO)
     times 4 dd jit_op_unsupported   ; 0xAD..0xB0
     dd jit_op_return                ; 0xB1 - return
-    times 78 dd jit_op_unsupported  ; 0xB2..0xFF
+    times 6 dd jit_op_unsupported   ; 0xB2..0xB7
+    dd jit_op_invokestatic          ; 0xB8 - invokestatic
+    times 71 dd jit_op_unsupported  ; 0xB9..0xFF
 
 section .note.GNU-stack noalloc noexec nowrite progbits
