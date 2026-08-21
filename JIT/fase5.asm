@@ -2,42 +2,42 @@
 ; JVMOS - JIT Engine (Fase 5: Parámetros Dinámicos y Convención de Llamada)
 ; Formato: NASM x86 32-bit (Modo Protegido Bare-Metal)
 ; ============================================================================
+
 [bits 32]
 
-section .data
-    test_bytecode_p6: db 0x03, 0x3B, 0x1A, 0x10, 0x05, 0x9F, 0x00, 0x09, 0x1A, 0x04, 0x60, 0x3B, 0xA7, 0xFF, 0xF6, 0x1A, 0xAC
-    p6_cursor:        dd 0
-    loop_start_addr:  dd 0
-
 section .text
-    global jit_compile_phase6
-    global jit_test_phase6
+    global jit_compile_phase5
+    global jit_test_phase5
 
-p6_emit_byte:
-    mov edx, [p6_cursor]
+p5_emit_byte:
+    mov edx, [p5_cursor]
     mov [edx], al
-    inc dword [p6_cursor]
+    inc dword [p5_cursor]
     ret
 
-p6_emit_dword:
-    mov edx, [p6_cursor]
+p5_emit_dword:
+    mov edx, [p5_cursor]
     mov [edx], eax
-    add dword [p6_cursor], 4
+    add dword [p5_cursor], 4
     ret
 
-jit_compile_phase6:
+; ----------------------------------------------------------------------------
+; COMPILADOR JIT FASE 5
+; ----------------------------------------------------------------------------
+jit_compile_phase5:
     push ebp
     mov ebp, esp
     push ebx
     push esi
     push edi
 
-    mov dword [p6_cursor], 0x00200000
+    ; Usar memoria física ejecutable
+    mov dword [p5_cursor], 0x00200000
 
-    call p6_emit_prologue
+    call p5_emit_prologue
 
     mov edi, esi
-    add edi, ecx
+    add edi, ecx                ; Límite del bytecode
 
 .compile_loop:
     cmp esi, edi
@@ -46,7 +46,7 @@ jit_compile_phase6:
     movzx eax, byte [esi]
     inc esi
 
-    mov ebx, [jit_p6_opcode_table + eax * 4]
+    mov ebx, [jit_p5_opcode_table + eax * 4]
     call ebx
 
     jmp .compile_loop
@@ -59,30 +59,153 @@ jit_compile_phase6:
     mov esp, ebp
     pop ebp
     ret
+
+; ----------------------------------------------------------------------------
+; PRÓLOGO Y EPÍLOGO CON MARCO DE PILA
+; ----------------------------------------------------------------------------
+p5_emit_prologue:
+    mov al, 0x55                ; push ebp
+    call p5_emit_byte
+    mov al, 0x89                ; mov ebp, esp
+    call p5_emit_byte
+    mov al, 0xE5
+    call p5_emit_byte
+    mov al, 0x83                ; sub esp, 32 (Espacio para variables internas si se requieren)
+    call p5_emit_byte
+    mov al, 0xEC
+    call p5_emit_byte
+    mov al, 0x20
+    call p5_emit_byte
+    ret
+
+p5_emit_epilogue:
+    mov al, 0x89                ; mov esp, ebp
+    call p5_emit_byte
+    mov al, 0xEC
+    call p5_emit_byte
+    mov al, 0x5D                ; pop ebp
+    call p5_emit_byte
+    mov al, 0xC3                ; ret
+    call p5_emit_byte
+    ret
+
+; ----------------------------------------------------------------------------
+; MANEJADORES DE OPCODES
+; Note: iload_N lee los parámetros recibidos dinámicamente desde [ebp + 8 + (N*4)]
+; ----------------------------------------------------------------------------
+jit_op_nop:
+    mov al, 0x90
+    call p5_emit_byte
+    ret
+
+; Opcode 0x1A: iload_0 -> Carga Param 0 de [ebp + 8]
+jit_op_iload_0:
+    mov al, 0x8B                ; mov eax, [ebp + 8]
+    call p5_emit_byte
+    mov al, 0x45
+    call p5_emit_byte
+    mov al, 0x08
+    call p5_emit_byte
+    mov al, 0x50                ; push eax
+    call p5_emit_byte
+    ret
+
+; Opcode 0x1B: iload_1 -> Carga Param 1 de [ebp + 12]
+jit_op_iload_1:
+    mov al, 0x8B                ; mov eax, [ebp + 12]
+    call p5_emit_byte
+    mov al, 0x45
+    call p5_emit_byte
+    mov al, 0x0C
+    call p5_emit_byte
+    mov al, 0x50                ; push eax
+    call p5_emit_byte
+    ret
+
+; Opcode 0x1C: iload_2 -> Carga Param 2 de [ebp + 16]
+jit_op_iload_2:
+    mov al, 0x8B                ; mov eax, [ebp + 16]
+    call p5_emit_byte
+    mov al, 0x45
+    call p5_emit_byte
+    mov al, 0x10
+    call p5_emit_byte
+    mov al, 0x50                ; push eax
+    call p5_emit_byte
+    ret
+
+; Opcode 0x60: iadd -> Suma valores
+jit_op_iadd:
+    mov al, 0x5B                ; pop ebx
+    call p5_emit_byte
+    mov al, 0x58                ; pop eax
+    call p5_emit_byte
+    mov al, 0x01                ; add eax, ebx
+    call p5_emit_byte
+    mov al, 0xD8
+    call p5_emit_byte
+    mov al, 0x50                ; push eax
+    call p5_emit_byte
+    ret
+
+jit_op_ireturn:
+    mov al, 0x58                ; pop eax
+    call p5_emit_byte
+    call p5_emit_epilogue
+    ret
+
+jit_op_unsupported:
+    cli
+    hlt
+
+; ----------------------------------------------------------------------------
+; PRUEBA DE LA FASE 5 (Invocación con Argumentos Dinámicos)
+; ----------------------------------------------------------------------------
+section .data
+    test_bytecode_p5: db 0x1A, 0x1B, 0x60, 0xAC  ; iload_0, iload_1, iadd, ireturn
+    p5_cursor:        dd 0
+
+section .text
+jit_test_phase5:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+
+    ; 1. Compilar el método
+    mov esi, test_bytecode_p5
+    mov ecx, 4
+    call jit_compile_phase5     ; Retorna puntero ejecutable en EAX
+
+    ; 2. Invocar la función enviando 2 parámetros dinámicos a la pila x86: (40, 60)
+    push dword 60               ; Param 1 (b)
+    push dword 40               ; Param 0 (a)
+    call eax                    ; Llama al método JIT compilado
+    add esp, 8                  ; Limpiar los 2 argumentos de la pila nativa
+
+    pop edi
+    pop esi
+    pop ebx
+    mov esp, ebp
+    pop ebp
+    ret                         ; EAX debe ser 100 (40 + 60)
+
 ; ----------------------------------------------------------------------------
 ; TABLA DE DESPACHO
 ; ----------------------------------------------------------------------------
 section .rodata
 align 4
-jit_p6_opcode_table:
+jit_p5_opcode_table:
     dd jit_op_nop                   ; 0x00
-    times 2 dd jit_op_unsupported   ; 0x01..0x02
-    dd jit_op_iconst_0              ; 0x03
-    dd jit_op_iconst_1              ; 0x04
-    times 11 dd jit_op_unsupported  ; 0x05..0x0F
-    dd jit_op_bipush                ; 0x10
-    times 9 dd jit_op_unsupported   ; 0x11..0x19
-    dd jit_op_iload_0               ; 0x1A
-    times 32 dd jit_op_unsupported  ; 0x1B..0x3A
-    dd jit_op_istore_0              ; 0x3B
-    times 36 dd jit_op_unsupported  ; 0x3C..0x5F
-    dd jit_op_iadd                  ; 0x60
-    times 62 dd jit_op_unsupported  ; 0x61..0x9E
-    dd jit_op_if_icmpeq             ; 0x9F
-    times 7 dd jit_op_unsupported   ; 0xA0..0xA6
-    dd jit_op_goto                  ; 0xA7
-    times 4 dd jit_op_unsupported   ; 0xA8..0xAB
-    dd jit_op_ireturn               ; 0xAC
+    times 25 dd jit_op_unsupported  ; 0x01..0x19
+    dd jit_op_iload_0               ; 0x1A - iload_0
+    dd jit_op_iload_1               ; 0x1B - iload_1
+    dd jit_op_iload_2               ; 0x1C - iload_2
+    times 67 dd jit_op_unsupported  ; 0x1D..0x5F
+    dd jit_op_iadd                  ; 0x60 - iadd
+    times 75 dd jit_op_unsupported  ; 0x61..0xAB
+    dd jit_op_ireturn               ; 0xAC - ireturn
     times 83 dd jit_op_unsupported  ; 0xAD..0xFF
 
 section .note.GNU-stack noalloc noexec nowrite progbits
