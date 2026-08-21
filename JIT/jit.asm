@@ -431,8 +431,10 @@ jit_op_dconst_1:
 	
 ; --- CARGAS DE VARIABLES (iload / aload) ---
 ; Opcode 0x15: iload <index_8bit>
+; Opcode 0x17: fload <index_8bit>
 ; Opcode 0x19: aload <index_8bit>
 jit_op_iload:
+jit_op_fload:
 jit_op_aload:
     movzx ebx, byte [esi]       ; Leer índice de variable local
     inc esi                     ; Consumir byte de índice
@@ -1174,7 +1176,7 @@ jit_op_iaload:
     call jit_emit_byte
     ret
 
-; Opcode 0x4F: iastore
+; Opcode 0x4F: iastore (int - enteros)
 jit_op_iastore:
     mov al, 0x5A                ; pop edx (value)
     call jit_emit_byte
@@ -1190,19 +1192,67 @@ jit_op_iastore:
     call jit_emit_byte
     ret
 	
+; Opcode 0x35: saload (Cargar short de short[])
+jit_op_saload:
+    mov al, 0x59                ; pop ecx (index)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (arrayref)
+    call jit_emit_byte
+    mov al, 0x0F                ; movsx eax, word [ebx + ecx * 2]
+    call jit_emit_byte
+    mov al, 0xBF
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    mov al, 0x4B
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x53: aastore (Guardar referencia en Object[])
+jit_op_aastore:
+    mov al, 0x58                ; pop eax (value)
+    call jit_emit_byte
+    mov al, 0x59                ; pop ecx (index)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (arrayref)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebx + ecx * 4], eax
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    mov al, 0x8B
+    call jit_emit_byte
+    ret
+
+; Opcode 0x54: bastore (Guardar byte en byte[])
+jit_op_bastore:
+    mov al, 0x58                ; pop eax (value)
+    call jit_emit_byte
+    mov al, 0x59                ; pop ecx (index)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (arrayref)
+    call jit_emit_byte
+    mov al, 0x88                ; mov [ebx + ecx], al
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    mov al, 0x0B
+    call jit_emit_byte
+    ret
+
+; Opcode 0x55: castore (Guardar char UTF-16 en char[])
 ; Opcode 0x56: sastore (Guardar short en short[])
+jit_op_castore:
 jit_op_sastore:
     mov al, 0x58                ; pop eax (value)
     call jit_emit_byte
     mov al, 0x59                ; pop ecx (index)
     call jit_emit_byte
-    mov al, 0x5D                ; pop ebp -> cambiamos a ebx para base
-    ; Usamos ebx como base del array
     mov al, 0x5B                ; pop ebx (arrayref)
     call jit_emit_byte
-
-    ; Emitir: mov [ebx + ecx * 2], ax (Bytes x86: 0x66 0x89 0x04 0x4B)
-    mov al, 0x66                ; Operando de 16 bits
+    mov al, 0x66                ; mov [ebx + ecx * 2], ax (0x66 0x89 0x04 0x4B)
     call jit_emit_byte
     mov al, 0x89
     call jit_emit_byte
@@ -1512,7 +1562,9 @@ jit_opcode_table:
     dd jit_op_ldc_w                 ; 0x13 - ldc_w 
     dd jit_op_unsupported           ; 0x14 - ldc2_w
     dd jit_op_iload                 ; 0x15 - iload
-    times 3 dd jit_op_unsupported   ; 0x16..0x18
+    dd jit_op_unsupported           ; 0x16 - lload
+    dd jit_op_fload                 ; 0x17 - fload (MAPPED)
+    dd jit_op_unsupported           ; 0x18 - dload
     dd jit_op_aload                 ; 0x19 - aload
     dd jit_op_iload_0               ; 0x1A - iload_0
     dd jit_op_iload_1               ; 0x1B - iload_1
@@ -1528,11 +1580,14 @@ jit_opcode_table:
     dd jit_op_aload_2               ; 0x2C - aload_2 
     dd jit_op_aload_3               ; 0x2D - aload_3 
     dd jit_op_aload_4               ; 0x2E - aload_4
-    dd jit_op_aload_5               ; 0x2F - aload_5    
-    dd jit_op_iaload                ; 0x2E - iaload 
-    times 5 dd jit_op_unsupported   ; 0x2F..0x35
+    dd jit_op_aload_5               ; 0x2F - aload_5
+    dd jit_op_iaload                ; 0x30 - iaload
+    times 4 dd jit_op_unsupported   ; 0x31..0x34
+    dd jit_op_saload                ; 0x35 - saload 
     dd jit_op_istore                ; 0x36 - istore
-    times 3 dd jit_op_unsupported   ; 0x37..0x39
+    dd jit_op_unsupported           ; 0x37 - lstore
+    dd jit_op_unsupported           ; 0x38 - fstore
+    dd jit_op_unsupported           ; 0x39 - dstore
     dd jit_op_astore                ; 0x3A - astore 
     dd jit_op_istore_0              ; 0x3B - istore_0
     dd jit_op_istore_1              ; 0x3C - istore_1
@@ -1549,8 +1604,11 @@ jit_opcode_table:
     dd jit_op_astore_5              ; 0x4C - astore_5
     times 2 dd jit_op_unsupported   ; 0x4D..0x4E
     dd jit_op_iastore               ; 0x4F - iastore
-    times 6 dd jit_op_unsupported   ; 0x50..0x55
-    dd jit_op_sastore               ; 0x56 - sastore
+    times 3 dd jit_op_unsupported   ; 0x50..0x52
+    dd jit_op_aastore               ; 0x53 - aastore 
+    dd jit_op_bastore               ; 0x54 - bastore 
+    dd jit_op_castore               ; 0x55 - castore 
+    dd jit_op_sastore               ; 0x56 - sastore 
     dd jit_op_pop                   ; 0x57 - pop 
     dd jit_op_unsupported           ; 0x58 - pop2
     dd jit_op_dup                   ; 0x59 - dup
