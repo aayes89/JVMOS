@@ -37,6 +37,7 @@ extern sys_serial_puts
 extern jvm_dispatch_loop
 extern find_method_bytecode
 
+; JIT 
 extern jit_test_phase1
 extern jit_test_phase2
 extern jit_test_phase3
