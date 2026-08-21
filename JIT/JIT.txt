@@ -1,0 +1,3 @@
+* Fases 1 a 6 integradas en fichero jit.asm (ya  no son necesarias)
+* Incluyeron varios opcodes para soporte de mayoría en una JVM funcional.
+
