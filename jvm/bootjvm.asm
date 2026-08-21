@@ -9,7 +9,7 @@ global operand_stack
 global stack_ptr
 global local_vars
 global cp_offsets
-global cp_end_ptr                   ; <-- Variable expuesta para find_method_bytecode
+global cp_end_ptr                   
 global current_class_ptr
 global pc_ptr
 global frame_ptr
@@ -27,7 +27,6 @@ global tmp_offset
 global parse_constant_pool
 global find_main_method
 
-
 ; INVOCACIONES EXTERNAS
 
 extern g_boot_class_start
@@ -38,24 +37,131 @@ extern sys_serial_puts
 extern jvm_dispatch_loop
 extern find_method_bytecode
 
-section .text
+extern jit_test_phase1
+extern jit_test_phase2
+extern jit_test_phase3
+extern jit_test_phase4
+extern jit_test_phase5
+extern jit_test_phase6
 
+
+section .text
 
 ; PUNTO DE ENTRADA PRINCIPAL DE BOOTJVM
 
 bootjvm_start:
-    ; 1. Inicialización centralizada de Hardware e Interrupciones (HAL)
+    ; Inicialización centralizada de Hardware e Interrupciones (HAL)
     call sys_hardware_init
 
     push msg_dbg_start
     call sys_serial_puts
     add esp, 4
+	
+	; FASES DE PRUEBA PARA EL JIT
+	
+	; FASE 1 test
+    call jit_test_phase1
 
-    ; 2. Inicializar puntero de la clase principal
+    cmp eax, 0x12345678
+    je .jit_phase1_ok
+
+    ; Si falla, enviar alerta por el puerto serie y detener
+    push msg_err_jit_f1
+    call sys_serial_puts
+    add esp, 4
+    jmp fatal_halt
+
+.jit_phase1_ok:
+    push msg_dbg_jit_ok
+    call sys_serial_puts
+    add esp, 4
+
+    ; FASE 2 test
+    call jit_test_phase2
+
+    cmp eax, 0x42               ; ¿Devolvió 66 en decimal?
+    je .jit_phase2_ok
+
+    push msg_err_jit_f2
+    call sys_serial_puts
+    add esp, 4
+    jmp fatal_halt
+
+.jit_phase2_ok:
+    push msg_dbg_jit2_ok
+    call sys_serial_puts
+    add esp, 4
+	
+	; FASE 3 test
+    call jit_test_phase3
+
+    cmp eax, 20                 ; Debe retornar 20 (el valor asignado a la variable local 1)
+    je .jit_phase3_ok
+	
+	push msg_err_jit_f3
+    call sys_serial_puts
+    add esp, 4
+    jmp fatal_halt
+
+.jit_phase3_ok:
+    push msg_dbg_jit3_ok
+    call sys_serial_puts
+    add esp, 4
+	
+	; FASE 4 test
+    call jit_test_phase4
+
+    cmp eax, 30                 ; ¿10 + 20 = 30?
+    je .jit_phase4_ok
+
+    push msg_err_jit_f4
+    call sys_serial_puts
+    add esp, 4
+    jmp fatal_halt
+
+.jit_phase4_ok:
+    push msg_dbg_jit4_ok
+    call sys_serial_puts
+    add esp, 4
+	
+	; FASE 5 test
+    call jit_test_phase5
+
+    cmp eax, 100                ; ¿40 + 60 = 100?
+    je .jit_phase5_ok
+
+    push msg_err_jit_f5
+    call sys_serial_puts
+    add esp, 4
+    jmp fatal_halt
+
+.jit_phase5_ok:
+    push msg_dbg_jit5_ok
+    call sys_serial_puts
+    add esp, 4
+	
+	; FASE 6 test
+    call jit_test_phase6
+
+    cmp eax, 5                  ; El bucle debe iterar 5 veces y retornar 5
+    je .jit_phase6_ok
+
+    push msg_err_jit_f6
+    call sys_serial_puts
+    add esp, 4
+    jmp fatal_halt
+
+.jit_phase6_ok:
+    push msg_dbg_jit6_ok
+    call sys_serial_puts
+    add esp, 4
+	; FIN DE PRUEBAS
+
+    ; Inicializar puntero de la clase principal
     mov esi, g_boot_class_start
     mov [current_class_ptr], esi
 
-    ; 3. Validar Magic Number (0xCAFEBABE)
+    ; Validar Magic Number (0xCAFEBABE)
     mov eax, [esi]
     bswap eax
     cmp eax, 0xCAFEBABE
@@ -233,14 +339,32 @@ fatal_halt:
 
 section .rodata
 main_name_str:         db "main"
-msg_dbg_start:         db 13, 10, "[BootJVM] Booting JVM Kernel...", 13, 10, 0
-msg_dbg_magic_ok:      db "[BootJVM] Magic CAFEBABE Verified!", 13, 10, 0
-msg_dbg_cp_ok:         db "[BootJVM] Constant Pool Parsed Successfully!", 13, 10, 0
-msg_dbg_main_ok:       db "[BootJVM] Method 'main' found! Jumping to interpreter...", 13, 10, 0
+msg_dbg_start:         db 13, 10, "[BootJVM] Booting JVM Kernel [DEBUG ACTIVE]...", 13, 10, 0
+msg_dbg_magic_ok:      db "[BootJVM] Magic CAFEBABE verified", 13, 10, 0
+msg_dbg_cp_ok:         db "[BootJVM] Constant Pool parsed successfully", 13, 10, 0
+msg_dbg_main_ok:       db "[BootJVM] Method 'main' found. Jumping to interpreter...", 13, 10, 0
 
-msg_err_magic:         db 13, 10, "[BootJVM Panic] ClassFormatError: Bad Magic!", 13, 10, 0
-msg_err_format:        db 13, 10, "[BootJVM Panic] ClassFormatError: Corrupted CP!", 13, 10, 0
-msg_err_nomain:        db 13, 10, "[BootJVM Panic] NoSuchMethodError: main not found!", 13, 10, 0
+msg_err_magic:         db 13, 10, "[BootJVM Panic] ClassFormatError: Bad Magic", 13, 10, 0
+msg_err_format:        db 13, 10, "[BootJVM Panic] ClassFormatError: Corrupted CP", 13, 10, 0
+msg_err_nomain:        db 13, 10, "[BootJVM Panic] NoSuchMethodError: main not found", 13, 10, 0
+
+msg_dbg_jit_ok:   db "[BootJVM JIT] Phase 1 Engine Test PASSED!", 13, 10, 0
+msg_err_jit_f1:   db 13, 10, "[BootJVM Panic] JIT Phase 1 Execution Failed!", 13, 10, 0
+
+msg_dbg_jit2_ok:  db "[BootJVM JIT] Phase 2 Parser & Compiler Test PASSED! (EAX=66)", 13, 10, 0
+msg_err_jit_f2:   db 13, 10, "[BootJVM Panic] JIT Phase 2 Compilation Failed!", 13, 10, 0
+
+msg_dbg_jit3_ok:  db "[BootJVM JIT] Phase 3 Local Variables & Stack Frame PASSED! (EAX=10)", 13, 10, 0
+msg_err_jit_f3:   db 13, 10, "[BootJVM Panic] JIT Phase 3 Local Vars Failed!", 13, 10, 0
+
+msg_dbg_jit4_ok: db "[BootJVM JIT] Phase 4 Arithmetic (iadd) PASSED! (EAX=30)", 13, 10, 0
+msg_err_jit_f4:  db 13, 10, "[BootJVM Panic] JIT Phase 4 Arithmetic Failed!", 13, 10, 0
+
+msg_dbg_jit5_ok: db "[BootJVM JIT] Phase 5 Dynamic Params PASSED! (EAX=100)", 13, 10, 0
+msg_err_jit_f5:  db 13, 10, "[BootJVM Panic] JIT Phase 5 Dynamic Params Failed!", 13, 10, 0
+
+msg_dbg_jit6_ok: db "[BootJVM JIT] Phase 6 Control Flow & Loops PASSED! (EAX=5)", 13, 10, 0
+msg_err_jit_f6:  db 13, 10, "[BootJVM Panic] JIT Phase 6 Loops Failed!", 13, 10, 0
 
 section .data
 sys_arg_id:        dd 0
