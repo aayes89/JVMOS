@@ -403,6 +403,155 @@ jit_op_imul:
     call jit_emit_byte
     ret
 
+; Division de enteros (0x6C: idiv) 
+jit_op_idiv:
+    mov al, 0x5B                ; pop ecx (divisor)
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (dividendo)
+    call jit_emit_byte
+    mov al, 0x99                ; cdq (extiende signo EAX a EDX:EAX)
+    call jit_emit_byte
+    mov al, 0xF7                ; idiv ecx (Bytes: 0xF7 0xF9)
+    call jit_emit_byte
+    mov al, 0xF9
+    call jit_emit_byte
+    mov al, 0x50                ; push eax (cociente)
+    call jit_emit_byte
+    ret
+
+; modulo y residuo (0x70: irem) 
+jit_op_irem:
+    mov al, 0x5B                ; pop ecx
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x99                ; cdq
+    call jit_emit_byte
+    mov al, 0xF7                ; idiv ecx
+    call jit_emit_byte
+    mov al, 0xF9
+    call jit_emit_byte
+    mov al, 0x52                ; push edx (el residuo queda en EDX)
+    call jit_emit_byte
+    ret
+
+; Negacion de entero (0x74: ineg) 
+jit_op_ineg:
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xF7                ; neg eax (Bytes: 0xF7 0xD8)
+    call jit_emit_byte
+    mov al, 0xD8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Shift izquierdo (0x78: ishl)
+jit_op_ishl:
+    mov al, 0x59                ; pop ecx (count)
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (value)
+    call jit_emit_byte
+    mov al, 0xD3                ; shl eax, cl (Bytes: 0xD3 0xE0)
+    call jit_emit_byte
+    mov al, 0xE0
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Shift derecho aritmético (0x7A: ishr) 
+jit_op_ishr:
+    mov al, 0x59                ; pop ecx
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xD3                ; sar eax, cl (Bytes: 0xD3 0xF8)
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Shift derecho lógico (0x7C: iushr) 
+jit_op_iushr:
+    mov al, 0x59                ; pop ecx
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0xD3                ; shr eax, cl (Bytes: 0xD3 0xE8)
+    call jit_emit_byte
+    mov al, 0xE8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Operaciones bitwise aqui (0x7E: iand, 0x80: ior, 0x82: ixor) 
+jit_op_iand:
+    mov al, 0x5B                ; pop ebx
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x21                ; and eax, ebx (Bytes: 0x21 0xD8)
+    call jit_emit_byte
+    mov al, 0xD8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+jit_op_ior:
+    mov al, 0x5B                ; pop ebx
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x09                ; or eax, ebx (Bytes: 0x09 0xD8)
+    call jit_emit_byte
+    mov al, 0xD8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+jit_op_ixor:
+    mov al, 0x5B                ; pop ebx
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x31                ; xor eax, ebx (Bytes: 0x31 0xD8)
+    call jit_emit_byte
+    mov al, 0xD8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Equivalente de (i++ o i=i+1) (0x84: iinc <index> <const>) 
+jit_op_iinc:
+    movzx ebx, byte [esi]       ; Leer index de la variable local
+    inc esi
+    movsx ecx, byte [esi]       ; Leer la constante (con signo)
+    inc esi
+
+    ; Calcular el offset en el Marco de Pila: Local N = [ebp - (N+1)*4]
+    inc ebx
+    shl ebx, 2                  ; EBX = (N+1) * 4
+    neg ebx                     ; EBX = -((N+1)*4)
+
+    ; Emitir instrucción x86: add dword [ebp + ebx], ecx
+    mov al, 0x83                ; add dword [ebp + disp8], imm8
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, bl                  ; Offset negativo de la variable local
+    call jit_emit_byte
+    mov al, cl                  ; Valor constante a sumar
+    call jit_emit_byte
+    ret
+	
 ; Opcode 0x59: dup (Duplica el tope de la pila x86) -> pop eax / push eax / push eax
 jit_op_dup:
     mov al, 0x58                ; pop eax
