@@ -425,7 +425,9 @@ jit_op_dconst_1:
 	
 ; --- CARGAS DE VARIABLES (iload / aload) ---
 ; Opcode 0x15: iload <index_8bit>
+; Opcode 0x19: aload <index_8bit>
 jit_op_iload:
+jit_op_aload:
     movzx ebx, byte [esi]       ; Leer índice de variable local
     inc esi                     ; Consumir byte de índice
 
@@ -990,6 +992,178 @@ jit_op_ifeq:
     sub eax, ebx
     call jit_emit_dword
     ret
+
+; Saltos condicionales
+jit_op_ifne:
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx
+    movsx eax, ax
+
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x83                ; cmp eax, 0
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x00
+    call jit_emit_byte
+
+    mov al, 0x0F                ; JNE rel32
+    call jit_emit_byte
+    mov al, 0x85
+    call jit_emit_byte
+
+    mov eax, [loop_start_addr]
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    ret
+
+; Opcode 0x9E: ifle <branchbyte1, branchbyte2>
+jit_op_ifle:
+    movzx eax, byte [esi]       ; Byte alto del offset
+    inc esi
+    movzx ebx, byte [esi]       ; Byte bajo del offset
+    inc esi
+    shl eax, 8
+    or eax, ebx
+    movsx eax, ax               ; Extensión de signo 16 a 32 bits
+
+    ; 1. Desapilar valor
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+
+    ; 2. Comparar con 0 (cmp eax, 0)
+    mov al, 0x83
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x00
+    call jit_emit_byte
+
+    ; 3. Emitir JLE rel32 (0x0F 0x8E <offset32>)
+    mov al, 0x0F
+    call jit_emit_byte
+    mov al, 0x8E
+    call jit_emit_byte
+
+    ; Calcular salto relativo
+    mov eax, [loop_start_addr]
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    ret
+	
+; Helper genérico para emitir: pop ebx, pop eax, cmp eax, ebx, jcc rel32
+jit_emit_icmp_branch:
+    push ecx                    ; ECX tiene la condición Jcc x86 (0x85=JNE, 0x8C=JL, 0x8D=JGE, 0x8F=JG, 0x8E=JLE)
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx
+    movsx eax, ax
+
+    mov al, 0x5B                ; pop ebx (op2)
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (op1)
+    call jit_emit_byte
+    mov al, 0x39                ; cmp eax, ebx
+    call jit_emit_byte
+    mov al, 0xD8
+    call jit_emit_byte
+
+    mov al, 0x0F                ; Prefijo de salto rel32
+    call jit_emit_byte
+    pop ecx
+    mov al, cl                  ; Byte de condición Jcc
+    call jit_emit_byte
+
+    mov eax, [loop_start_addr]
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    ret
+
+; Opcode 0xA0: if_icmpne
+jit_op_if_icmpne:
+    mov ecx, 0x85               ; JNE
+    jmp jit_emit_icmp_branch
+
+; Opcode 0xA1: if_icmplt
+jit_op_if_icmplt:
+    mov ecx, 0x8C               ; JL
+    jmp jit_emit_icmp_branch
+
+; Opcode 0xA2: if_icmpge
+jit_op_if_icmpge:
+    mov ecx, 0x8D               ; JGE
+    jmp jit_emit_icmp_branch
+
+; Opcode 0xA3: if_icmpgt
+jit_op_if_icmpgt:
+    mov ecx, 0x8F               ; JG
+    jmp jit_emit_icmp_branch
+
+; Opcode 0xA4: if_icmple
+jit_op_if_icmple:
+    mov ecx, 0x8E               ; JLE
+    jmp jit_emit_icmp_branch
+
+; Manejo de arreglos (iaload, iastore, arraylength) ---
+; Opcode 0x2E: iaload
+jit_op_iaload:
+    mov al, 0x59                ; pop ecx (index)
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (arrayref)
+    call jit_emit_byte
+    mov al, 0x8B                ; mov eax, [eax + ecx * 4]
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    mov al, 0x88
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x4F: iastore
+jit_op_iastore:
+    mov al, 0x5A                ; pop edx (value)
+    call jit_emit_byte
+    mov al, 0x59                ; pop ecx (index)
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (arrayref)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [eax + ecx * 4], edx
+    call jit_emit_byte
+    mov al, 0x14
+    call jit_emit_byte
+    mov al, 0x88
+    call jit_emit_byte
+    ret
+
+; Opcode 0xBE: arraylength
+jit_op_arraylength:
+    mov al, 0x58                ; pop eax (arrayref)
+    call jit_emit_byte
+    mov al, 0x8B                ; mov eax, [eax - 8] (Length en cabecera)
+    call jit_emit_byte
+    mov al, 0x40
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
 	
 ; Swap de pila (0x5F: swap) 
 jit_op_swap:
@@ -1277,7 +1451,8 @@ jit_opcode_table:
     dd jit_op_ldc_w                 ; 0x13 - ldc_w 
     dd jit_op_unsupported           ; 0x14 - ldc2_w
     dd jit_op_iload                 ; 0x15 - iload
-    times 4 dd jit_op_unsupported   ; 0x16..0x19
+    times 3 dd jit_op_unsupported   ; 0x16..0x18
+	dd jit_op_aload					; 0x19 - aload
     dd jit_op_iload_0               ; 0x1A - iload_0
     dd jit_op_iload_1               ; 0x1B - iload_1
     dd jit_op_iload_2               ; 0x1C - iload_2 
@@ -1293,7 +1468,8 @@ jit_opcode_table:
     dd jit_op_aload_3               ; 0x2D - aload_3 
     dd jit_op_aload_4               ; 0x2E - aload_4
     dd jit_op_aload_5               ; 0x2F - aload_5    
-    times 6 dd jit_op_unsupported   ; 0x30..0x35
+    dd jit_op_iaload                ; 0x2E - iaload 
+    times 5 dd jit_op_unsupported   ; 0x2F..0x35
     dd jit_op_istore                ; 0x36 - istore
     times 3 dd jit_op_unsupported   ; 0x37..0x39
     dd jit_op_astore                ; 0x3A - astore 
@@ -1310,7 +1486,9 @@ jit_opcode_table:
     dd jit_op_astore_3              ; 0x4A - astore_3 
     dd jit_op_astore_4              ; 0x4B - astore_4
     dd jit_op_astore_5              ; 0x4C - astore_5
-    times 10 dd jit_op_unsupported  ; 0x4D..0x56
+    times 2 dd jit_op_unsupported   ; 0x4D..0x4E
+    dd jit_op_iastore               ; 0x4F - iastore 
+    times 7 dd jit_op_unsupported   ; 0x50..0x56
     dd jit_op_pop                   ; 0x57 - pop 
     dd jit_op_unsupported           ; 0x58 - pop2
     dd jit_op_dup                   ; 0x59 - dup
@@ -1356,12 +1534,19 @@ jit_opcode_table:
     dd jit_op_l2i                   ; 0x88 - l2i 
     times 8 dd jit_op_unsupported   ; 0x89..0x90
     dd jit_op_i2b                   ; 0x91 - i2b 
-    dd jit_op_i2c                   ; 0x92 - i2c     
+    dd jit_op_i2c                   ; 0x92 - i2c 
     times 6 dd jit_op_unsupported   ; 0x93..0x98
-    dd jit_op_ifeq                  ; 0x99 - ifeq (MAPPED)
-    times 5 dd jit_op_unsupported   ; 0x9A..0x9E	
+    dd jit_op_ifeq                  ; 0x99 - ifeq
+    dd jit_op_ifne                  ; 0x9A - ifne 
+    times 3 dd jit_op_unsupported   ; 0x9B..0x9D
+	dd jit_op_ifle					; 0x9E - ifle
     dd jit_op_if_icmpeq             ; 0x9F - if_icmpeq
-    times 7 dd jit_op_unsupported   ; 0xA0..0xA6
+    dd jit_op_if_icmpne             ; 0xA0 - if_icmpne 
+    dd jit_op_if_icmplt             ; 0xA1 - if_icmplt 
+    dd jit_op_if_icmpge             ; 0xA2 - if_icmpge 
+    dd jit_op_if_icmpgt             ; 0xA3 - if_icmpgt 
+    dd jit_op_if_icmple             ; 0xA4 - if_icmple 
+    times 2 dd jit_op_unsupported   ; 0xA5..0xA6
     dd jit_op_goto                  ; 0xA7 - goto
     times 4 dd jit_op_unsupported   ; 0xA8..0xAB
     dd jit_op_ireturn               ; 0xAC - ireturn
@@ -1370,7 +1555,9 @@ jit_opcode_table:
     times 6 dd jit_op_unsupported   ; 0xB2..0xB7
     dd jit_op_invokestatic          ; 0xB8 - invokestatic
     times 3 dd jit_op_unsupported   ; 0xB9..0xBB
-    dd jit_op_newarray              ; 0xBC - newarray 
-    times 67 dd jit_op_unsupported  ; 0xBD..0xFF 
+    dd jit_op_newarray              ; 0xBC - newarray
+    dd jit_op_unsupported           ; 0xBD - anewarray
+    dd jit_op_arraylength           ; 0xBE - arraylength 
+    times 65 dd jit_op_unsupported  ; 0xBF..0xFF
 
 section .note.GNU-stack noalloc noexec nowrite progbits
