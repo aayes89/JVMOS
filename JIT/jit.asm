@@ -154,10 +154,19 @@ jit_compile_method:
 ; ----------------------------------------------------------------------------
 ; OPCODES UNIFICADOS Y MIGRACIONES ARITMÉTICAS
 ; ----------------------------------------------------------------------------
+; Opcode 0x00: null
 jit_op_aconst_null:
     mov al, 0x6A
     call jit_emit_byte
     mov al, 0x00
+    call jit_emit_byte
+    ret
+
+; Opcode 0x02: iconst_m1 -> Empujar -1 (0xFFFFFFFF) a la pila nativa x86 (push -1)
+jit_op_iconst_m1:
+    mov al, 0x6A                ; push imm8 (con signo)
+    call jit_emit_byte
+    mov al, 0xFF                ; -1 en complemento a dos
     call jit_emit_byte
     ret
     
@@ -261,6 +270,30 @@ jit_op_fconst_2:
     mov al, 0x68                ; push imm32
     call jit_emit_byte
     mov eax, 0x40000000
+    call jit_emit_dword
+    ret
+
+; Opcode 0x0E: dconst_0 (0.0) Double de 64bits
+jit_op_dconst_0:
+    mov al, 0x68                ; push imm32 (parte alta)
+    call jit_emit_byte
+    mov eax, 0x00000000
+    call jit_emit_dword
+    mov al, 0x68                ; push imm32 (parte baja)
+    call jit_emit_byte
+    mov eax, 0x00000000
+    call jit_emit_dword
+    ret
+
+; Opcode 0x0F: dconst_1 (1.0) -> push 0x3FF00000 (alta), push 0x00000000 (baja)
+jit_op_dconst_1:
+    mov al, 0x68                ; push imm32 (parte alta)
+    call jit_emit_byte
+    mov eax, 0x3FF00000
+    call jit_emit_dword
+    mov al, 0x68                ; push imm32 (parte baja)
+    call jit_emit_byte
+    mov eax, 0x00000000
     call jit_emit_dword
     ret
 	
@@ -888,7 +921,7 @@ align 4
 jit_opcode_table:
     dd jit_op_nop                   ; 0x00 - nop
     dd jit_op_aconst_null           ; 0x01 - aconst_null
-    dd jit_op_unsupported           ; 0x02 - iconst_m1
+    dd jit_op_iconst_m1             ; 0x02 - iconst_m1
     dd jit_op_iconst_0              ; 0x03 - iconst_0
     dd jit_op_iconst_1              ; 0x04 - iconst_1
     dd jit_op_iconst_2              ; 0x05 - iconst_2
@@ -900,7 +933,8 @@ jit_opcode_table:
     dd jit_op_fconst_0              ; 0x0B - fconst_0
     dd jit_op_fconst_1              ; 0x0C - fconst_1
     dd jit_op_fconst_2              ; 0x0D - fconst_2
-    times 2 dd jit_op_unsupported   ; 0x0E..0x0F
+    dd jit_op_dconst_0              ; 0x0E - dconst_0 
+    dd jit_op_dconst_1              ; 0x0F - dconst_1 
     dd jit_op_bipush                ; 0x10 - bipush
     times 9 dd jit_op_unsupported   ; 0x11..0x19
     dd jit_op_iload_0               ; 0x1A - iload_0
