@@ -207,6 +207,30 @@ jit_op_iconst_5:
     mov al, 0x05
     call jit_emit_byte
     ret
+
+; Opcode 0x09: lconst_0 -> Empujar 0L (64-bit) a la pila x86 (dos push de 32 bits: 0 y 0)
+jit_op_lconst_0:
+    mov al, 0x6A                ; push 0 (parte alta)
+    call jit_emit_byte
+    mov al, 0x00
+    call jit_emit_byte
+    mov al, 0x6A                ; push 0 (parte baja)
+    call jit_emit_byte
+    mov al, 0x00
+    call jit_emit_byte
+    ret
+
+; Opcode 0x0A: lconst_1 -> Empujar 1L (64-bit) a la pila x86 (push 0 parte alta, push 1 parte baja)
+jit_op_lconst_1:
+    mov al, 0x6A                ; push 0 (parte alta de 64-bit)
+    call jit_emit_byte
+    mov al, 0x00
+    call jit_emit_byte
+    mov al, 0x6A                ; push 1 (parte baja de 64-bit)
+    call jit_emit_byte
+    mov al, 0x01
+    call jit_emit_byte
+    ret
 	
 jit_op_bipush:
     movzx ecx, byte [esi]
@@ -478,13 +502,19 @@ msg_panic_head: db 13, 10, "[JIT Panic] Unsupported Opcode: 0x", 0
 hex_byte_str:   db "00!", 13, 10, 0
 
 jit_opcode_table:
-    dd jit_op_nop                   ; 0x00
-    dd jit_op_aconst_null		    ; 0x01
-	dd jit_op_unsupported			; 0x02
-    dd jit_op_iconst_0              ; 0x03
-    dd jit_op_iconst_1              ; 0x04
-    times 11 dd jit_op_unsupported  ; 0x05..0x0F
-    dd jit_op_bipush                ; 0x10
+    dd jit_op_nop                   ; 0x00 - nop
+    dd jit_op_aconst_null           ; 0x01 - aconst_null
+    dd jit_op_unsupported           ; 0x02 - iconst_m1
+    dd jit_op_iconst_0              ; 0x03 - iconst_0
+    dd jit_op_iconst_1              ; 0x04 - iconst_1
+    dd jit_op_iconst_2              ; 0x05 - iconst_2
+    dd jit_op_iconst_3              ; 0x06 - iconst_3
+    dd jit_op_iconst_4              ; 0x07 - iconst_4
+    dd jit_op_iconst_5              ; 0x08 - iconst_5
+    dd jit_op_lconst_0              ; 0x09 - lconst_0 (AGREGADO)
+    dd jit_op_lconst_1              ; 0x0A - lconst_1 (AGREGADO)
+    times 5 dd jit_op_unsupported   ; 0x0B..0x0F
+    dd jit_op_bipush                ; 0x10 - bipush
     times 9 dd jit_op_unsupported   ; 0x11..0x19
     dd jit_op_iload_0               ; 0x1A
     dd jit_op_iload_1               ; 0x1B
@@ -502,7 +532,7 @@ jit_opcode_table:
     times 4 dd jit_op_unsupported   ; 0xA8..0xAB
     dd jit_op_ireturn               ; 0xAC
     times 4 dd jit_op_unsupported   ; 0xAD..0xB0
-    dd jit_op_return                ; 0xB1 - return (void)
+    dd jit_op_return                ; 0xB1
     times 78 dd jit_op_unsupported  ; 0xB2..0xFF
-
+	
 section .note.GNU-stack noalloc noexec nowrite progbits
