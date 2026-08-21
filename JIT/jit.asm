@@ -16,10 +16,10 @@ section .data
     loop_start_addr:   dd 0
 
     ; Bytecodes de Prueba
-    test_bytecode_p2: db 0x10, 0x42, 0xAC                          ; bipush 66, ireturn
+    test_bytecode_p2: db 0x10, 0x42, 0xAC                           ; bipush 66, ireturn
     test_bytecode_p3: db 0x10, 0x0A, 0x3B, 0x10, 0x14, 0x3C, 0x1B, 0xAC ; ret 20 (local_var 1)
     test_bytecode_p4: db 0x10, 0x0A, 0x3B, 0x10, 0x14, 0x3C, 0x1A, 0x1B, 0x60, 0xAC ; 10 + 20 = 30
-    test_bytecode_p5: db 0x1A, 0x1B, 0x60, 0xAC                     ; param0 + param1 (40 + 60 = 100)
+    test_bytecode_p5: db 0x1A, 0x1B, 0x60, 0xAC                      ; param0 + param1 (40 + 60 = 100)
     test_bytecode_p6: db 0x03, 0x3B, 0x1A, 0x10, 0x05, 0x9F, 0x00, 0x09, 0x1A, 0x04, 0x60, 0x3B, 0xA7, 0xFF, 0xF6, 0x1A, 0xAC ; loop 5
 
 section .text
@@ -33,8 +33,8 @@ section .text
     global jit_test_phase4
     global jit_test_phase5
     global jit_test_phase6
-	
-	extern sys_serial_puts
+    
+    extern sys_serial_puts
 
 ; ----------------------------------------------------------------------------
 ; EMISORES DE CÓDIGO Y NUCLEO (Fase 1)
@@ -84,11 +84,11 @@ jit_emit_prologue:
     call jit_emit_byte
     mov al, 0xE5
     call jit_emit_byte
-    mov al, 0x83                ; sub esp, 16
+    mov al, 0x83                ; sub esp, 64 (Espacio seguro para 16 locales)
     call jit_emit_byte
     mov al, 0xEC
     call jit_emit_byte
-    mov al, 0x10
+    mov al, 0x40
     call jit_emit_byte
     ret
 
@@ -152,7 +152,7 @@ jit_compile_method:
     ret
 
 ; ----------------------------------------------------------------------------
-; OPCODES UNIFICADOS
+; OPCODES UNIFICADOS Y MIGRACIONES ARITMÉTICAS
 ; ----------------------------------------------------------------------------
 jit_op_aconst_null:
     mov al, 0x6A
@@ -160,7 +160,7 @@ jit_op_aconst_null:
     mov al, 0x00
     call jit_emit_byte
     ret
-	
+    
 jit_op_nop:
     mov al, 0x90
     call jit_emit_byte
@@ -181,57 +181,55 @@ jit_op_iconst_1:
     ret
 
 jit_op_iconst_2:
-    mov al, 0x6A                ; push 2
+    mov al, 0x6A
     call jit_emit_byte
     mov al, 0x02
     call jit_emit_byte
     ret
 
 jit_op_iconst_3:
-    mov al, 0x6A                ; push 3
+    mov al, 0x6A
     call jit_emit_byte
     mov al, 0x03
     call jit_emit_byte
     ret
 
 jit_op_iconst_4:
-    mov al, 0x6A                ; push 4
+    mov al, 0x6A
     call jit_emit_byte
     mov al, 0x04
     call jit_emit_byte
     ret
 
 jit_op_iconst_5:
-    mov al, 0x6A                ; push 5
+    mov al, 0x6A
     call jit_emit_byte
     mov al, 0x05
     call jit_emit_byte
     ret
 
-; Opcode 0x09: lconst_0 -> Empujar 0L (64-bit) a la pila x86 (dos push de 32 bits: 0 y 0)
 jit_op_lconst_0:
-    mov al, 0x6A                ; push 0 (parte alta)
+    mov al, 0x6A                ; push 0
     call jit_emit_byte
     mov al, 0x00
     call jit_emit_byte
-    mov al, 0x6A                ; push 0 (parte baja)
+    mov al, 0x6A                ; push 0
     call jit_emit_byte
     mov al, 0x00
     call jit_emit_byte
     ret
 
-; Opcode 0x0A: lconst_1 -> Empujar 1L (64-bit) a la pila x86 (push 0 parte alta, push 1 parte baja)
 jit_op_lconst_1:
-    mov al, 0x6A                ; push 0 (parte alta de 64-bit)
+    mov al, 0x6A                ; push 0
     call jit_emit_byte
     mov al, 0x00
     call jit_emit_byte
-    mov al, 0x6A                ; push 1 (parte baja de 64-bit)
+    mov al, 0x6A                ; push 1
     call jit_emit_byte
     mov al, 0x01
     call jit_emit_byte
     ret
-	
+    
 jit_op_bipush:
     movzx ecx, byte [esi]
     inc esi
@@ -240,10 +238,35 @@ jit_op_bipush:
     mov eax, ecx
     call jit_emit_dword
     ret
+	
+; --- CONSTANTES FLOTANTES (fconst_0, fconst_1, fconst_2) ---
+; Opcode 0x0B: fconst_0 (0.0f) -> push dword 0x00000000
+jit_op_fconst_0:
+    mov al, 0x68                ; push imm32
+    call jit_emit_byte
+    mov eax, 0x00000000
+    call jit_emit_dword
+    ret
 
-; Opcode 0x2A: aload_0 (Referencia a objeto String[] args)
-jit_op_aload_0:
+; Opcode 0x0C: fconst_1 (1.0f) -> push dword 0x3F800000
+jit_op_fconst_1:
+    mov al, 0x68                ; push imm32
+    call jit_emit_byte
+    mov eax, 0x3F800000
+    call jit_emit_dword
+    ret
+
+; Opcode 0x0D: fconst_2 (2.0f) -> push dword 0x40000000
+jit_op_fconst_2:
+    mov al, 0x68                ; push imm32
+    call jit_emit_byte
+    mov eax, 0x40000000
+    call jit_emit_dword
+    ret
+	
+; --- CARGAS DE VARIABLES (iload / aload) ---
 jit_op_iload_0:
+jit_op_aload_0:
     cmp dword [loop_start_addr], 0
     jne .skip_mark
     mov eax, [jit_buffer_ptr]
@@ -260,6 +283,7 @@ jit_op_iload_0:
     ret
 
 jit_op_iload_1:
+jit_op_aload_1:
     mov al, 0x8B                ; mov eax, [ebp - 8]
     call jit_emit_byte
     mov al, 0x45
@@ -270,8 +294,8 @@ jit_op_iload_1:
     call jit_emit_byte
     ret
 
-; Cargas de Integers a la pila x86: iload_2 [ebp - 12], iload_3 [ebp - 16]
 jit_op_iload_2:
+jit_op_aload_2:
     mov al, 0x8B                ; mov eax, [ebp - 12]
     call jit_emit_byte
     mov al, 0x45
@@ -283,6 +307,7 @@ jit_op_iload_2:
     ret
 
 jit_op_iload_3:
+jit_op_aload_3:
     mov al, 0x8B                ; mov eax, [ebp - 16]
     call jit_emit_byte
     mov al, 0x45
@@ -292,8 +317,116 @@ jit_op_iload_3:
     mov al, 0x50                ; push eax
     call jit_emit_byte
     ret
+
+jit_op_iload_4:
+jit_op_aload_4:
+    mov al, 0x8B                ; mov eax, [ebp - 20]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xEC                ; -20 en complemento a dos (0xEC)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+jit_op_iload_5:
+jit_op_aload_5:
+    mov al, 0x8B                ; mov eax, [ebp - 24]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xE8                ; -24 en complemento a dos (0xE8)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; --- CARGAS DE VARIABLES LONG (64-BIT) ---
+; Opcode 0x20: lload_0 -> Carga [ebp - 4] y [ebp - 8]
+jit_op_lload_0:
+    mov al, 0x8B                ; mov eax, [ebp - 4] (parte alta)
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xFC
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    mov al, 0x8B                ; mov eax, [ebp - 8] (parte baja)
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x21: lload_1 -> Carga [ebp - 8] y [ebp - 12]
+jit_op_lload_1:
+    mov al, 0x8B                ; mov eax, [ebp - 8]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    mov al, 0x8B                ; mov eax, [ebp - 12]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF4
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; --- ALMACENAMIENTO DE VARIABLES LONG (64-BIT) ---
+; Opcode 0x3F: lstore_0 -> Guarda en [ebp - 8] y [ebp - 4]
+jit_op_lstore_0:
+    mov al, 0x58                ; pop eax (parte baja)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 8], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (parte alta)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 4], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xFC
+    call jit_emit_byte
+    ret
+
+; Opcode 0x40: lstore_1 -> Guarda en [ebp - 12] y [ebp - 8]
+jit_op_lstore_1:
+    mov al, 0x58                ; pop eax (parte baja)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 12], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF4
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (parte alta)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 8], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    ret
 	
+; --- ALMACENAMIENTO DE VARIABLES (istore / astore) ---
 jit_op_istore_0:
+jit_op_astore_0:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
     mov al, 0x89                ; mov [ebp - 4], eax
@@ -305,6 +438,7 @@ jit_op_istore_0:
     ret
 
 jit_op_istore_1:
+jit_op_astore_1:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
     mov al, 0x89                ; mov [ebp - 8], eax
@@ -315,8 +449,8 @@ jit_op_istore_1:
     call jit_emit_byte
     ret
 
-; Almacenamiento de Integers: istore_2 [ebp - 12], istore_3 [ebp - 16]
 jit_op_istore_2:
+jit_op_astore_2:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
     mov al, 0x89                ; mov [ebp - 12], eax
@@ -328,6 +462,7 @@ jit_op_istore_2:
     ret
 
 jit_op_istore_3:
+jit_op_astore_3:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
     mov al, 0x89                ; mov [ebp - 16], eax
@@ -337,7 +472,31 @@ jit_op_istore_3:
     mov al, 0xF0
     call jit_emit_byte
     ret
-	
+
+jit_op_istore_4:
+jit_op_astore_4:
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 20], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xEC
+    call jit_emit_byte
+    ret
+
+jit_op_istore_5:
+jit_op_astore_5:
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 24], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xE8
+    call jit_emit_byte
+    ret
+    
 jit_op_iload_param_0:
     mov al, 0x8B                ; mov eax, [ebp + 8]
     call jit_emit_byte
@@ -360,6 +519,7 @@ jit_op_iload_param_1:
     call jit_emit_byte
     ret
 
+; --- OPERACIONES ARITMÉTICAS Y LÓGICAS ---
 jit_op_iadd:
     mov al, 0x5B                ; pop ebx
     call jit_emit_byte
@@ -373,7 +533,6 @@ jit_op_iadd:
     call jit_emit_byte
     ret
 
-; Opcode 0x64: isub (Resta) -> pop ebx / pop eax / sub eax, ebx / push eax
 jit_op_isub:
     mov al, 0x5B                ; pop ebx
     call jit_emit_byte
@@ -387,7 +546,6 @@ jit_op_isub:
     call jit_emit_byte
     ret
 
-; Opcode 0x68: imul (Multiplicación) -> pop ebx / pop eax / imul eax, ebx / push eax
 jit_op_imul:
     mov al, 0x5B                ; pop ebx
     call jit_emit_byte
@@ -403,23 +561,21 @@ jit_op_imul:
     call jit_emit_byte
     ret
 
-; Division de enteros (0x6C: idiv) 
 jit_op_idiv:
-    mov al, 0x5B                ; pop ecx (divisor)
+    mov al, 0x5B                ; pop ecx
     call jit_emit_byte
-    mov al, 0x58                ; pop eax (dividendo)
+    mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0x99                ; cdq (extiende signo EAX a EDX:EAX)
+    mov al, 0x99                ; cdq
     call jit_emit_byte
-    mov al, 0xF7                ; idiv ecx (Bytes: 0xF7 0xF9)
+    mov al, 0xF7                ; idiv ecx
     call jit_emit_byte
     mov al, 0xF9
     call jit_emit_byte
-    mov al, 0x50                ; push eax (cociente)
+    mov al, 0x50                ; push eax
     call jit_emit_byte
     ret
 
-; modulo y residuo (0x70: irem) 
 jit_op_irem:
     mov al, 0x5B                ; pop ecx
     call jit_emit_byte
@@ -431,15 +587,14 @@ jit_op_irem:
     call jit_emit_byte
     mov al, 0xF9
     call jit_emit_byte
-    mov al, 0x52                ; push edx (el residuo queda en EDX)
+    mov al, 0x52                ; push edx
     call jit_emit_byte
     ret
 
-; Negacion de entero (0x74: ineg) 
 jit_op_ineg:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0xF7                ; neg eax (Bytes: 0xF7 0xD8)
+    mov al, 0xF7                ; neg eax
     call jit_emit_byte
     mov al, 0xD8
     call jit_emit_byte
@@ -447,13 +602,12 @@ jit_op_ineg:
     call jit_emit_byte
     ret
 
-; Shift izquierdo (0x78: ishl)
 jit_op_ishl:
-    mov al, 0x59                ; pop ecx (count)
+    mov al, 0x59                ; pop ecx
     call jit_emit_byte
-    mov al, 0x58                ; pop eax (value)
+    mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0xD3                ; shl eax, cl (Bytes: 0xD3 0xE0)
+    mov al, 0xD3                ; shl eax, cl
     call jit_emit_byte
     mov al, 0xE0
     call jit_emit_byte
@@ -461,13 +615,12 @@ jit_op_ishl:
     call jit_emit_byte
     ret
 
-; Shift derecho aritmético (0x7A: ishr) 
 jit_op_ishr:
     mov al, 0x59                ; pop ecx
     call jit_emit_byte
     mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0xD3                ; sar eax, cl (Bytes: 0xD3 0xF8)
+    mov al, 0xD3                ; sar eax, cl
     call jit_emit_byte
     mov al, 0xF8
     call jit_emit_byte
@@ -475,13 +628,12 @@ jit_op_ishr:
     call jit_emit_byte
     ret
 
-; Shift derecho lógico (0x7C: iushr) 
 jit_op_iushr:
     mov al, 0x59                ; pop ecx
     call jit_emit_byte
     mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0xD3                ; shr eax, cl (Bytes: 0xD3 0xE8)
+    mov al, 0xD3                ; shr eax, cl
     call jit_emit_byte
     mov al, 0xE8
     call jit_emit_byte
@@ -489,13 +641,12 @@ jit_op_iushr:
     call jit_emit_byte
     ret
 
-; Operaciones bitwise aqui (0x7E: iand, 0x80: ior, 0x82: ixor) 
 jit_op_iand:
     mov al, 0x5B                ; pop ebx
     call jit_emit_byte
     mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0x21                ; and eax, ebx (Bytes: 0x21 0xD8)
+    mov al, 0x21                ; and eax, ebx
     call jit_emit_byte
     mov al, 0xD8
     call jit_emit_byte
@@ -508,7 +659,7 @@ jit_op_ior:
     call jit_emit_byte
     mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0x09                ; or eax, ebx (Bytes: 0x09 0xD8)
+    mov al, 0x09                ; or eax, ebx
     call jit_emit_byte
     mov al, 0xD8
     call jit_emit_byte
@@ -521,7 +672,7 @@ jit_op_ixor:
     call jit_emit_byte
     mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0x31                ; xor eax, ebx (Bytes: 0x31 0xD8)
+    mov al, 0x31                ; xor eax, ebx
     call jit_emit_byte
     mov al, 0xD8
     call jit_emit_byte
@@ -529,30 +680,26 @@ jit_op_ixor:
     call jit_emit_byte
     ret
 
-; Equivalente de (i++ o i=i+1) (0x84: iinc <index> <const>) 
 jit_op_iinc:
-    movzx ebx, byte [esi]       ; Leer index de la variable local
+    movzx ebx, byte [esi]       ; Leer index
     inc esi
-    movsx ecx, byte [esi]       ; Leer la constante (con signo)
+    movsx ecx, byte [esi]       ; Leer const
     inc esi
 
-    ; Calcular el offset en el Marco de Pila: Local N = [ebp - (N+1)*4]
     inc ebx
-    shl ebx, 2                  ; EBX = (N+1) * 4
-    neg ebx                     ; EBX = -((N+1)*4)
+    shl ebx, 2
+    neg ebx                     ; EBX = Offset negativo en EBP
 
-    ; Emitir instrucción x86: add dword [ebp + ebx], ecx
     mov al, 0x83                ; add dword [ebp + disp8], imm8
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, bl                  ; Offset negativo de la variable local
+    mov al, bl                  ; Offset variable local
     call jit_emit_byte
-    mov al, cl                  ; Valor constante a sumar
+    mov al, cl                  ; Constante
     call jit_emit_byte
     ret
-	
-; Opcode 0x59: dup (Duplica el tope de la pila x86) -> pop eax / push eax / push eax
+    
 jit_op_dup:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
@@ -562,12 +709,11 @@ jit_op_dup:
     call jit_emit_byte
     ret
 
-; Opcode 0x57: pop (Descarta el tope de la pila x86) -> pop eax
 jit_op_pop:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
     ret
-	
+    
 jit_op_if_icmpeq:
     add esi, 2
     mov al, 0x5B
@@ -601,7 +747,6 @@ jit_op_ireturn:
     call jit_emit_epilogue
     ret
 
-; Opcode 0xB1: return (para métodos void)
 jit_op_return:
     call jit_emit_epilogue
     ret
@@ -610,7 +755,6 @@ jit_op_return:
 jit_op_unsupported:
     movzx eax, byte [esi - 1]   ; Cargar el opcode que falló en EAX
 
-    ; Convertir byte EAX a ASCII
     mov ebx, eax
     shr ebx, 4                  ; Nibble alto
     call .nibble_to_hex
@@ -621,12 +765,10 @@ jit_op_unsupported:
     call .nibble_to_hex
     mov [hex_byte_str + 1], bl
 
-    ; Imprimir encabezado
     push msg_panic_head
     call sys_serial_puts
     add esp, 4
 
-    ; Imprimir el valor hexadecimal exacto (ej. "3C!", "B2!")
     push hex_byte_str
     call sys_serial_puts
     add esp, 4
@@ -706,20 +848,7 @@ jit_test_phase6:
     ret
 
 ; ----------------------------------------------------------------------------
-; LLAMADAS A LAS RUTINAS	
-; ----------------------------------------------------------------------------
-; Almacenamiento de Objetos/Referencias (astore_0 .. astore_3)
-jit_op_astore_0: jmp jit_op_istore_0
-jit_op_astore_1: jmp jit_op_istore_1
-jit_op_astore_2: jmp jit_op_istore_2
-jit_op_astore_3: jmp jit_op_istore_3
-; Cargas de Objetos/Referencias a la pila (aload_1, aload_2, aload_3)
-jit_op_aload_1: jmp jit_op_iload_1
-jit_op_aload_2: jmp jit_op_iload_2
-jit_op_aload_3: jmp jit_op_iload_3
-
-; ----------------------------------------------------------------------------
-; EJECUSIÓN REAL DE MÉDOTOS JAVA DESDE 'main'
+; EJECUSIÓN REAL DE MÉTODOS JAVA DESDE 'main'
 ; ----------------------------------------------------------------------------
 jit_execute_method:
     push ebp
@@ -728,11 +857,10 @@ jit_execute_method:
     push ecx
     push edx
 
-    ; Establecemos una longitud segura de 16 bytes para la compilación del main
-    ; (un main simple de suma ocupa menos de 10 bytes)
-    mov ecx, 16
+    ; Establecer un tamaño de buffer seguro para compilar el método main
+    mov ecx, 64
 
-    ; Compilar el bytecode real
+    ; Compilar ÚNICAMENTE la cantidad de bytes reales del método
     call jit_compile_method     ; Retorna dirección física x86 en EAX
 
     ; Ejecutar el código nativo compilado
@@ -752,8 +880,8 @@ section .rodata
 align 4
 
 msg_err_unsupported_op: db 13, 10, "[JIT Panic] Unsupported Opcode encountered!", 13, 10, 0
-msg_panic_head: db 13, 10, "[JIT Panic] Unsupported Opcode: 0x", 0
-hex_byte_str:   db "00!", 13, 10, 0
+msg_panic_head:         db 13, 10, "[JIT Panic] Unsupported Opcode: 0x", 0
+hex_byte_str:           db "00!", 13, 10, 0
 
 section .rodata
 align 4
@@ -769,29 +897,42 @@ jit_opcode_table:
     dd jit_op_iconst_5              ; 0x08 - iconst_5
     dd jit_op_lconst_0              ; 0x09 - lconst_0
     dd jit_op_lconst_1              ; 0x0A - lconst_1
-    times 5 dd jit_op_unsupported   ; 0x0B..0x0F
+    dd jit_op_fconst_0              ; 0x0B - fconst_0
+    dd jit_op_fconst_1              ; 0x0C - fconst_1
+    dd jit_op_fconst_2              ; 0x0D - fconst_2
+    times 2 dd jit_op_unsupported   ; 0x0E..0x0F
     dd jit_op_bipush                ; 0x10 - bipush
     times 9 dd jit_op_unsupported   ; 0x11..0x19
     dd jit_op_iload_0               ; 0x1A - iload_0
     dd jit_op_iload_1               ; 0x1B - iload_1
     dd jit_op_iload_2               ; 0x1C - iload_2 
     dd jit_op_iload_3               ; 0x1D - iload_3 
-    times 12 dd jit_op_unsupported  ; 0x1E..0x29
+    dd jit_op_iload_4               ; 0x1E - iload_4
+    dd jit_op_iload_5               ; 0x1F - iload_5
+    dd jit_op_lload_0               ; 0x20 - lload_0 
+    dd jit_op_lload_1               ; 0x21 - lload_1 
+    times 8 dd jit_op_unsupported   ; 0x22..0x29
     dd jit_op_aload_0               ; 0x2A - aload_0
     dd jit_op_aload_1               ; 0x2B - aload_1 
     dd jit_op_aload_2               ; 0x2C - aload_2 
     dd jit_op_aload_3               ; 0x2D - aload_3 
-    times 13 dd jit_op_unsupported  ; 0x2E..0x3A
+    dd jit_op_aload_4               ; 0x2E - aload_4
+    dd jit_op_aload_5               ; 0x2F - aload_5
+    times 11 dd jit_op_unsupported  ; 0x30..0x3A
     dd jit_op_istore_0              ; 0x3B - istore_0
     dd jit_op_istore_1              ; 0x3C - istore_1
     dd jit_op_istore_2              ; 0x3D - istore_2 
     dd jit_op_istore_3              ; 0x3E - istore_3 
-    times 8 dd jit_op_unsupported   ; 0x3F..0x46
+    dd jit_op_lstore_0              ; 0x3F - lstore_0
+    dd jit_op_lstore_1              ; 0x40 - lstore_1
+    times 6 dd jit_op_unsupported   ; 0x41..0x46
     dd jit_op_astore_0              ; 0x47 - astore_0 
     dd jit_op_astore_1              ; 0x48 - astore_1 
     dd jit_op_astore_2              ; 0x49 - astore_2 
     dd jit_op_astore_3              ; 0x4A - astore_3 
-    times 12 dd jit_op_unsupported  ; 0x4B..0x56
+    dd jit_op_astore_4              ; 0x4B - astore_4
+    dd jit_op_astore_5              ; 0x4C - astore_5
+    times 10 dd jit_op_unsupported  ; 0x4D..0x56
     dd jit_op_pop                   ; 0x57 - pop 
     dd jit_op_unsupported           ; 0x58 - pop2
     dd jit_op_dup                   ; 0x59 - dup 
@@ -840,5 +981,5 @@ jit_opcode_table:
     times 4 dd jit_op_unsupported   ; 0xAD..0xB0
     dd jit_op_return                ; 0xB1 - return
     times 78 dd jit_op_unsupported  ; 0xB2..0xFF
-	
+
 section .note.GNU-stack noalloc noexec nowrite progbits
