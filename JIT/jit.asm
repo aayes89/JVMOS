@@ -207,7 +207,7 @@ jit_op_iconst_5:
     mov al, 0x05
     call jit_emit_byte
     ret
-
+	
 jit_op_bipush:
     movzx ecx, byte [esi]
     inc esi
@@ -343,21 +343,26 @@ jit_op_return:
 
 ; Manejador de Opcodes No Soportados con Diagnóstico Hexadecimal
 jit_op_unsupported:
-    movzx eax, byte [esi - 1]   ; Cargar el opcode fallido en EAX
+    movzx eax, byte [esi - 1]   ; Cargar el opcode que falló en EAX
 
-    ; Convertir el byte EAX a 2 dígitos ASCII Hexadecimales
+    ; Convertir byte EAX a ASCII
     mov ebx, eax
     shr ebx, 4                  ; Nibble alto
     call .nibble_to_hex
-    mov [hex_opcode_str + 16], bl
+    mov [hex_byte_str], bl
 
     mov ebx, eax
     and ebx, 0x0F               ; Nibble bajo
     call .nibble_to_hex
-    mov [hex_opcode_str + 17], bl
+    mov [hex_byte_str + 1], bl
 
-    ; Imprimir la alerta con el código Hex en pantalla
-    push hex_opcode_str
+    ; Imprimir encabezado
+    push msg_panic_head
+    call sys_serial_puts
+    add esp, 4
+
+    ; Imprimir el valor hexadecimal exacto (ej. "3C!", "B2!")
+    push hex_byte_str
     call sys_serial_puts
     add esp, 4
 
@@ -367,7 +372,7 @@ jit_op_unsupported:
 .nibble_to_hex:
     cmp bl, 9
     jbe .is_digit
-    add bl, 7                   ; Ajuste ASCII para letras A-F
+    add bl, 7
 .is_digit:
     add bl, '0'
     ret
@@ -469,18 +474,15 @@ section .rodata
 align 4
 
 msg_err_unsupported_op: db 13, 10, "[JIT Panic] Unsupported Opcode encountered!", 13, 10, 0
-hex_opcode_str: db 13, 10, "[JIT Panic] Unsupported Opcode: 0x00!", 13, 10, 0
+msg_panic_head: db 13, 10, "[JIT Panic] Unsupported Opcode: 0x", 0
+hex_byte_str:   db "00!", 13, 10, 0
 
 jit_opcode_table:
     dd jit_op_nop                   ; 0x00
     dd jit_op_aconst_null		    ; 0x01
 	dd jit_op_unsupported			; 0x02
-	dd jit_op_iconst_0              ; 0x03 - iconst_0
-    dd jit_op_iconst_1              ; 0x04 - iconst_1
-    dd jit_op_iconst_2              ; 0x05 - iconst_2
-    dd jit_op_iconst_3              ; 0x06 - iconst_3
-    dd jit_op_iconst_4              ; 0x07 - iconst_4
-    dd jit_op_iconst_5              ; 0x08 - iconst_5
+    dd jit_op_iconst_0              ; 0x03
+    dd jit_op_iconst_1              ; 0x04
     times 11 dd jit_op_unsupported  ; 0x05..0x0F
     dd jit_op_bipush                ; 0x10
     times 9 dd jit_op_unsupported   ; 0x11..0x19
