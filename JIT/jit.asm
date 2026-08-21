@@ -444,8 +444,9 @@ msg_err_unsupported_op: db 13, 10, "[JIT Panic] Unsupported Opcode encountered!"
 hex_opcode_str: db 13, 10, "[JIT Panic] Unsupported Opcode: 0x00!", 13, 10, 0
 
 jit_opcode_table:
-    dd jit_op_nop                   ; 0x00 - nop
-    times 2 dd jit_op_unsupported   ; 0x01..0x02
+    dd jit_op_nop                   ; 0x00
+    dd jit_op_aconst_null		    ; 0x01
+	dd jit_op_unsupported			; 0x02
     dd jit_op_iconst_0              ; 0x03
     dd jit_op_iconst_1              ; 0x04
     times 11 dd jit_op_unsupported  ; 0x05..0x0F
@@ -454,7 +455,7 @@ jit_opcode_table:
     dd jit_op_iload_0               ; 0x1A
     dd jit_op_iload_1               ; 0x1B
     times 14 dd jit_op_unsupported  ; 0x1C..0x29
-    dd jit_op_aload_0               ; 0x2A - aload_0
+    dd jit_op_aload_0               ; 0x2A
     times 16 dd jit_op_unsupported  ; 0x2B..0x3A
     dd jit_op_istore_0              ; 0x3B
     dd jit_op_istore_1              ; 0x3C
