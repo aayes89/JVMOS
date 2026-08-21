@@ -275,18 +275,22 @@ jit_op_ldc_w:
     movzx ebx, byte [esi]       ; Byte bajo del índice
     inc esi
     shl eax, 8
-    or eax, ebx                 ; EAX = Index en Constant Pool
+    or eax, ebx                 ; EAX = Index de la Constant Pool
 
-    ; Obtener la dirección física de la entrada en la Constant Pool:
-    ; cp_entry_addr = cp_base_ptr + (index * 4)
     mov ebx, [cp_base_ptr]
-    mov eax, [ebx + eax * 4]    ; EAX = Valor entero/float de 32 bits guardado
+    test ebx, ebx
+    jz .fallback_zero
+    mov eax, [ebx + eax * 4]    ; Extraer constante de 32 bits
+    jmp .emit_val
 
-    ; Emitir: push imm32 (0x68 <DWORD>)
-    push eax                    ; Preservar valor de la constante
-    mov al, 0x68
+.fallback_zero:
+    xor eax, eax
+
+.emit_val:
+    push eax
+    mov al, 0x68                ; push imm32
     call jit_emit_byte
-    pop eax                     ; Restaurar valor
+    pop eax
     call jit_emit_dword
     ret
 	
@@ -340,6 +344,7 @@ jit_op_dconst_1:
     ret
 	
 ; --- CARGAS DE VARIABLES (iload / aload) ---
+; Local 0 (Slot de args / Param 0) -> [ebp - 4] (0xFC)
 jit_op_iload_0:
 jit_op_aload_0:
     cmp dword [loop_start_addr], 0
@@ -356,7 +361,7 @@ jit_op_aload_0:
     mov al, 0x50                ; push eax
     call jit_emit_byte
     ret
-
+		
 jit_op_iload_1:
 jit_op_aload_1:
     mov al, 0x8B                ; mov eax, [ebp - 8]
@@ -511,7 +516,7 @@ jit_op_astore_0:
     mov al, 0xFC
     call jit_emit_byte
     ret
-
+	
 jit_op_istore_1:
 jit_op_astore_1:
     mov al, 0x58                ; pop eax
@@ -595,6 +600,7 @@ jit_op_iload_param_1:
     ret
 
 ; --- OPERACIONES ARITMÉTICAS Y LÓGICAS ---
+; a+b
 jit_op_iadd:
     mov al, 0x5B                ; pop ebx
     call jit_emit_byte
@@ -608,12 +614,13 @@ jit_op_iadd:
     call jit_emit_byte
     ret
 
+; a-b
 jit_op_isub:
-    mov al, 0x5B                ; pop ebx
+    mov al, 0x5B                ; pop ebx (b)
     call jit_emit_byte
-    mov al, 0x58                ; pop eax
+    mov al, 0x58                ; pop eax (a)
     call jit_emit_byte
-    mov al, 0x29                ; sub eax, ebx
+    mov al, 0x29                ; sub eax, ebx (EAX = a - b)
     call jit_emit_byte
     mov al, 0xD8
     call jit_emit_byte
@@ -621,51 +628,55 @@ jit_op_isub:
     call jit_emit_byte
     ret
 
+; a*b
 jit_op_imul:
     mov al, 0x5B                ; pop ebx
     call jit_emit_byte
     mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0x0F                ; imul eax, ebx (Bytes: 0x0F 0xAF 0xC3)
+    mov al, 0x0F
     call jit_emit_byte
     mov al, 0xAF
     call jit_emit_byte
-    mov al, 0xC3
+    mov al, 0xC3                ; ModRM byte para EAX, EBX
     call jit_emit_byte
     mov al, 0x50                ; push eax
     call jit_emit_byte
     ret
 
+; a/b
 jit_op_idiv:
-    mov al, 0x5B                ; pop ecx
+    mov al, 0x5B                ; pop ebx (b = divisor)
     call jit_emit_byte
-    mov al, 0x58                ; pop eax
+    mov al, 0x58                ; pop eax (a = dividendo)
     call jit_emit_byte
     mov al, 0x99                ; cdq
     call jit_emit_byte
-    mov al, 0xF7                ; idiv ecx
+    mov al, 0xF7                ; idiv ebx (Bytes: 0xF7 0xFB)
     call jit_emit_byte
-    mov al, 0xF9
+    mov al, 0xFB
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0x50                ; push eax (cociente)
     call jit_emit_byte
     ret
 
+; modulo a%b
 jit_op_irem:
-    mov al, 0x5B                ; pop ecx
+    mov al, 0x5B                ; pop ebx (b = divisor)
     call jit_emit_byte
-    mov al, 0x58                ; pop eax
+    mov al, 0x58                ; pop eax (a = dividendo)
     call jit_emit_byte
     mov al, 0x99                ; cdq
     call jit_emit_byte
-    mov al, 0xF7                ; idiv ecx
+    mov al, 0xF7                ; idiv ebx (Bytes: 0xF7 0xFB)
     call jit_emit_byte
-    mov al, 0xF9
+    mov al, 0xFB
     call jit_emit_byte
-    mov al, 0x52                ; push edx
+    mov al, 0x52                ; push edx (residuo en EDX)
     call jit_emit_byte
     ret
 
+; negación (-1)*a
 jit_op_ineg:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
