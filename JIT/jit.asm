@@ -39,6 +39,7 @@ section .text
 	; Símbolos de Syscalls del Kernel (de jvm_native.asm / sys_api.asm)	
 	extern sys_arg_id, sys_arg_a, sys_arg_b, sys_arg_c, sys_arg_d
 	extern jvm_invoke_native
+	extern sys_kalloc
 
 ; ----------------------------------------------------------------------------
 ; EMISORES DE CÓDIGO Y NUCLEO (Fase 1)
@@ -423,7 +424,46 @@ jit_op_dconst_1:
     ret
 	
 ; --- CARGAS DE VARIABLES (iload / aload) ---
-; Local 0 (Slot de args / Param 0) -> [ebp - 4] (0xFC)
+; Opcode 0x15: iload <index_8bit>
+jit_op_iload:
+    movzx ebx, byte [esi]       ; Leer índice de variable local
+    inc esi                     ; Consumir byte de índice
+
+    inc ebx
+    shl ebx, 2
+    neg ebx                     ; EBX = -((index + 1) * 4)
+
+    mov al, 0x8B                ; mov eax, [ebp + disp8]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, bl                  ; Offset EBP de la variable local
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x36: istore <index_8bit>
+; Opcode 0x3A: astore <index_8bit>
+jit_op_istore:
+jit_op_astore:
+    movzx ebx, byte [esi]       ; Leer índice de variable local
+    inc esi                     ; Consumir byte de índice
+
+    inc ebx
+    shl ebx, 2
+    neg ebx                     ; EBX = -((index + 1) * 4)
+
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp + disp8], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, bl                  ; Offset EBP de la variable local
+    call jit_emit_byte
+    ret
+	
 jit_op_iload_0:
 jit_op_aload_0:
     cmp dword [loop_start_addr], 0
@@ -915,6 +955,42 @@ jit_op_i2c:
     call jit_emit_byte
     ret
 
+; Opcode 0x99: ifeq <branchbyte1, branchbyte2>
+jit_op_ifeq:
+    movzx eax, byte [esi]       ; Byte alto del offset (Big-Endian)
+    inc esi
+    movzx ebx, byte [esi]       ; Byte bajo del offset
+    inc esi
+    shl eax, 8
+    or eax, ebx
+    movsx eax, ax               ; Extension de signo de 16 a 32 bits (Offset Java)
+
+    ; 1. Desapilar el valor a comparar
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+
+    ; 2. Comparar con 0 (cmp eax, 0)
+    mov al, 0x83                ; cmp eax, 0
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+    mov al, 0x00
+    call jit_emit_byte
+
+    ; 3. Emitir Je rel32 (0x0F 0x84 <offset32>)
+    mov al, 0x0F
+    call jit_emit_byte
+    mov al, 0x84
+    call jit_emit_byte
+
+    ; Calcular salto nativo hacia atrás/adelante usando loop_start_addr
+    mov eax, [loop_start_addr]
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    ret
+	
 ; Swap de pila (0x5F: swap) 
 jit_op_swap:
     mov al, 0x58                ; pop eax (val1)
@@ -978,6 +1054,72 @@ jit_op_return:
     call jit_emit_epilogue
     ret
 
+; Opcode 0xBC: newarray <atype_8bit>
+jit_op_newarray:
+    movzx ebx, byte [esi]       ; Leer atype (ignorado o usado para tipo)
+    inc esi                     ; Consumir atype byte
+
+    ; Emitir wrapper nativo x86 para alojar el array:
+    ; 1. Desapilar el tamaño (count) enviado por Java
+    mov al, 0x58                ; pop eax (count)
+    call jit_emit_byte
+
+    ; 2. Calcular bytes a pedir: (count * 4) + 8 (cabecera)
+    mov al, 0x89                ; mov ecx, eax
+    call jit_emit_byte
+    mov al, 0xC1
+    call jit_emit_byte
+    
+    mov al, 0xC1                ; shl eax, 2 (count * 4)
+    call jit_emit_byte
+    mov al, 0xE0
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+
+    mov al, 0x83                ; add eax, 8
+    call jit_emit_byte
+    mov al, 0xC0
+    call jit_emit_byte
+    mov al, 0x08
+    call jit_emit_byte
+
+    ; 3. Llamar a sys_kalloc(bytes)
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    mov al, 0xE8                ; call rel32 sys_kalloc
+    call jit_emit_byte
+    mov eax, sys_kalloc
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    mov al, 0x83                ; add esp, 4
+    call jit_emit_byte
+    mov al, 0xC4
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+
+    ; 4. Escribir cabecera: [EAX] = count (length)
+    mov al, 0x89                ; mov [eax], ecx
+    call jit_emit_byte
+    mov al, 0x08
+    call jit_emit_byte
+
+    ; 5. Devolver puntero al inicio de los datos (EAX + 8)
+    mov al, 0x83                ; add eax, 8
+    call jit_emit_byte
+    mov al, 0xC0
+    call jit_emit_byte
+    mov al, 0x08
+    call jit_emit_byte
+
+    ; 6. Empujar la referencia del array a la pila nativa
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+	
 ; Manejador de Opcodes No Soportados con Diagnóstico Hexadecimal
 jit_op_unsupported:
     movzx eax, byte [esi - 1]   ; Cargar el opcode que falló en EAX
@@ -1084,10 +1226,10 @@ jit_execute_method:
     push ecx
     push edx
 
-    ; Establecer un tamaño de buffer seguro para compilar el método main
-    mov ecx, 64
+    ; Tamaño dinámico para compilar todo Boot.main (4096 bytes)
+    mov ecx, 4096
 
-    ; Compilar ÚNICAMENTE la cantidad de bytes reales del método
+    ; Compilar el bytecode
     call jit_compile_method     ; Retorna dirección física x86 en EAX
 
     ; Ejecutar el código nativo compilado
@@ -1131,9 +1273,11 @@ jit_opcode_table:
     dd jit_op_dconst_1              ; 0x0F - dconst_1 
     dd jit_op_bipush                ; 0x10 - bipush
     dd jit_op_sipush                ; 0x11 - sipush
-    dd jit_op_ldc		            ; 0x12 - ldc
+    dd jit_op_ldc                   ; 0x12 - ldc
     dd jit_op_ldc_w                 ; 0x13 - ldc_w 
-    times 6 dd jit_op_unsupported   ; 0x14..0x19
+    dd jit_op_unsupported           ; 0x14 - ldc2_w
+    dd jit_op_iload                 ; 0x15 - iload
+    times 4 dd jit_op_unsupported   ; 0x16..0x19
     dd jit_op_iload_0               ; 0x1A - iload_0
     dd jit_op_iload_1               ; 0x1B - iload_1
     dd jit_op_iload_2               ; 0x1C - iload_2 
@@ -1148,8 +1292,11 @@ jit_opcode_table:
     dd jit_op_aload_2               ; 0x2C - aload_2 
     dd jit_op_aload_3               ; 0x2D - aload_3 
     dd jit_op_aload_4               ; 0x2E - aload_4
-    dd jit_op_aload_5               ; 0x2F - aload_5
-    times 11 dd jit_op_unsupported  ; 0x30..0x3A
+    dd jit_op_aload_5               ; 0x2F - aload_5    
+    times 6 dd jit_op_unsupported   ; 0x30..0x35
+    dd jit_op_istore                ; 0x36 - istore
+    times 3 dd jit_op_unsupported   ; 0x37..0x39
+    dd jit_op_astore                ; 0x3A - astore 
     dd jit_op_istore_0              ; 0x3B - istore_0
     dd jit_op_istore_1              ; 0x3C - istore_1
     dd jit_op_istore_2              ; 0x3D - istore_2 
@@ -1209,17 +1356,21 @@ jit_opcode_table:
     dd jit_op_l2i                   ; 0x88 - l2i 
     times 8 dd jit_op_unsupported   ; 0x89..0x90
     dd jit_op_i2b                   ; 0x91 - i2b 
-    dd jit_op_i2c                   ; 0x92 - i2c 
-    times 12 dd jit_op_unsupported  ; 0x93..0x9E (RELLENO FIJO)
+    dd jit_op_i2c                   ; 0x92 - i2c     
+    times 6 dd jit_op_unsupported   ; 0x93..0x98
+    dd jit_op_ifeq                  ; 0x99 - ifeq (MAPPED)
+    times 5 dd jit_op_unsupported   ; 0x9A..0x9E	
     dd jit_op_if_icmpeq             ; 0x9F - if_icmpeq
     times 7 dd jit_op_unsupported   ; 0xA0..0xA6
     dd jit_op_goto                  ; 0xA7 - goto
     times 4 dd jit_op_unsupported   ; 0xA8..0xAB
-    dd jit_op_ireturn               ; 0xAC - ireturn (RECUPERADO)
+    dd jit_op_ireturn               ; 0xAC - ireturn
     times 4 dd jit_op_unsupported   ; 0xAD..0xB0
     dd jit_op_return                ; 0xB1 - return
     times 6 dd jit_op_unsupported   ; 0xB2..0xB7
     dd jit_op_invokestatic          ; 0xB8 - invokestatic
-    times 71 dd jit_op_unsupported  ; 0xB9..0xFF
+    times 3 dd jit_op_unsupported   ; 0xB9..0xBB
+    dd jit_op_newarray              ; 0xBC - newarray 
+    times 67 dd jit_op_unsupported  ; 0xBD..0xFF 
 
 section .note.GNU-stack noalloc noexec nowrite progbits
