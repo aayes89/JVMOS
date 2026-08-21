@@ -37,13 +37,13 @@ extern sys_serial_puts
 extern jvm_dispatch_loop
 extern find_method_bytecode
 
-; JIT 
 extern jit_test_phase1
 extern jit_test_phase2
 extern jit_test_phase3
 extern jit_test_phase4
 extern jit_test_phase5
 extern jit_test_phase6
+extern jit_execute_method
 
 
 section .text
@@ -172,7 +172,7 @@ bootjvm_start:
     call sys_serial_puts
     add esp, 4
 
-    ; 4. Inicializar Estado Virtual de la JVM
+    ; Inicializar Estado Virtual de la JVM
     mov dword [stack_ptr], 0
     mov dword [frame_ptr], 0
 
@@ -187,7 +187,7 @@ bootjvm_start:
     ; Asignar el array de argumentos a la Variable Local 0 de main()
     mov [local_vars + 0], eax
 
-    ; 5. Parsear Constant Pool de la clase cargada
+    ; Parsear Constant Pool de la clase cargada
     call parse_constant_pool
     jc fatal_class_format_error
 
@@ -195,16 +195,38 @@ bootjvm_start:
     call sys_serial_puts
     add esp, 4
 
-    ; 6. Buscar el método de entrada "main"
+    ; Buscar el método de entrada "main"
     call find_main_method
     jc fatal_main_not_found
-	; 7. Cargar el Puntero de Programa (PC Virtual)
+	
+	; Cargar el Puntero de Programa (PC Virtual)
     mov [pc_ptr], eax
     push msg_dbg_main_ok
     call sys_serial_puts
     add esp, 4   
 
-    ; 8. Delegar la ejecución al ciclo de despacho principal
+	; ========================================================================
+    ; INTEGRACIÓN REAL DEL JIT:
+    ; En lugar de jmp jvm_dispatch_loop (intérprete lento por software),
+    ; enviamos el atributo Code al JIT para compilarlo y ejecutarlo nativamente.
+    ; ========================================================================
+    mov esi, [pc_ptr]           ; ESI = Puntero al bytecode de main
+    call jit_execute_method     ; Compila y ejecuta el método en RAM
+
+    ; Imprimir resultado devuelto por main (almacenado en EAX)
+    push eax                    ; Preservar resultado (ej. 30)
+
+    push msg_dbg_jit_done
+    call sys_serial_puts
+    add esp, 4
+
+    pop eax                     ; Restaurar resultado de EAX
+
+    ; Finalizar la ejecución del sistema
+    jmp fatal_halt
+	
+    ; Delegar la ejecución al ciclo de despacho principal
+	; ya no se usa
     jmp jvm_dispatch_loop
 
 
@@ -343,7 +365,8 @@ main_name_str:         db "main"
 msg_dbg_start:         db 13, 10, "[BootJVM] Booting JVM Kernel [DEBUG ACTIVE]...", 13, 10, 0
 msg_dbg_magic_ok:      db "[BootJVM] Magic CAFEBABE verified", 13, 10, 0
 msg_dbg_cp_ok:         db "[BootJVM] Constant Pool parsed successfully", 13, 10, 0
-msg_dbg_main_ok:       db "[BootJVM] Method 'main' found. Jumping to interpreter...", 13, 10, 0
+msg_dbg_main_ok:       db "[BootJVM] Method 'main' found! Executing via JIT Engine...", 13, 10, 0
+msg_dbg_jit_done:      db 13, 10, "[SUCCESS] Boot.main executed natively via JIT Engine!", 13, 10, 0
 
 msg_err_magic:         db 13, 10, "[BootJVM Panic] ClassFormatError: Bad Magic", 13, 10, 0
 msg_err_format:        db 13, 10, "[BootJVM Panic] ClassFormatError: Corrupted CP", 13, 10, 0
@@ -366,6 +389,7 @@ msg_err_jit_f5:  db 13, 10, "[BootJVM Panic] JIT Phase 5 Dynamic Params Failed!"
 
 msg_dbg_jit6_ok: db "[BootJVM JIT] Phase 6 Control Flow & Loops PASSED! (EAX=5)", 13, 10, 0
 msg_err_jit_f6:  db 13, 10, "[BootJVM Panic] JIT Phase 6 Loops Failed!", 13, 10, 0
+
 
 section .data
 sys_arg_id:        dd 0
