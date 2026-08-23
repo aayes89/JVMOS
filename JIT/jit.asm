@@ -33,18 +33,22 @@ section .text
     global jit_test_phase4
     global jit_test_phase5
     global jit_test_phase6
-    
-    extern sys_serial_puts
+        
 	global sys_native_dispatch
 	extern sys_kalloc
 	extern cp_base_ptr
 	extern cp_offsets
 	; Símbolos de Syscalls del Kernel (de jvm_native.asm / sys_api.asm)	
-	extern sys_arg_id, sys_arg_a, sys_arg_b, sys_arg_c, sys_arg_d	
-	extern sys_fill_rect, sys_draw_string, current_color, sys_sleep, sys_exit
-	
-	
-
+	extern sys_arg_id, sys_arg_a, sys_arg_b, sys_arg_c, sys_arg_d			
+	extern draw_char_vram, sys_draw_string, sys_serial_puts
+	extern current_color
+	extern sys_read_keyboard_scancode, sys_set_keyboard_layout, sys_read_mouse 
+	extern sys_draw_rect, sys_fill_rect, sys_draw_line, sys_get_pixel, sys_draw_pixel
+	extern sys_beep, sys_nosound, sys_get_free_mem, sys_get_ram_size
+	extern sys_pci_read_config, sys_disk_read_sector, sys_disk_write_sector
+	extern sys_rtl8139_init, sys_rtl8139_send_packet, sys_net_receive_packet
+	extern sys_inb, sys_outb, sys_inw, sys_outw, sys_indw, sys_outdw, sys_get_ticks
+	extern sys_get_time, sys_sleep, sys_exit
 
 ; EMISORES DE CÓDIGO Y NUCLEO (Fase 1)
 
@@ -87,24 +91,51 @@ jit_emit_dword:
     ret
 
 jit_emit_prologue:
+    ; 1. Crear Marco de Pila Standard
     mov al, 0x55                ; push ebp
     call jit_emit_byte
     mov al, 0x89                ; mov ebp, esp
     call jit_emit_byte
     mov al, 0xE5
     call jit_emit_byte
-    mov al, 0x53                ; push ebx  (preservar ABI)
-    call jit_emit_byte
-    mov al, 0x56                ; push esi  (preservar ABI)
-    call jit_emit_byte
-    mov al, 0x57                ; push edi  (preservar ABI)
-    call jit_emit_byte
+
+    ; 2. Reservar espacio para 32 variables locales (128 bytes)
     mov al, 0x81                ; sub esp, 128
     call jit_emit_byte
     mov al, 0xEC
     call jit_emit_byte
     mov eax, 128
     call jit_emit_dword
+
+    ; 3. Copiar Parámetros Entrantes a Variables Locales Internas
+    ; Copiar Param 0 [ebp + 8] -> Local 0 [ebp - 4]
+    mov al, 0x8B                ; mov eax, [ebp + 8]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0x08
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 4], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xFC
+    call jit_emit_byte
+
+    ; Copiar Param 1 [ebp + 12] -> Local 1 [ebp - 8]
+    mov al, 0x8B                ; mov eax, [ebp + 12]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0x0C
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 8], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF8
+    call jit_emit_byte
+
     ret
 
 jit_emit_epilogue:
@@ -135,25 +166,47 @@ sys_native_dispatch:
 
     mov eax, [sys_arg_id]
 
-    cmp eax, 1                  ; Syscall 1: Set Color
+    cmp eax, 0                  ; SYS_KALLOC
+    je .sys_kalloc
+    cmp eax, 1                  ; SYS_SET_COLOR
     je .sys_set_color
-    cmp eax, 2                  ; Syscall 2: Fill Rect
+    cmp eax, 2                  ; SYS_FILL_RECT
     je .sys_fill_rect
-    cmp eax, 5                  ; Syscall 5: Draw String
+    cmp eax, 3                  ; SYS_DRAW_RECT
+    je .sys_draw_rect
+    cmp eax, 4                  ; SYS_DRAW_LINE
+    je .sys_draw_line
+    cmp eax, 5                  ; SYS_DRAW_STRING
     je .sys_draw_string
-    cmp eax, 12                 ; Syscall 12: Sleep
+    cmp eax, 6                  ; SYS_READ_KEYBOARD
+    je .sys_read_keyboard
+    cmp eax, 7                  ; SYS_READ_MOUSE
+    je .sys_read_mouse
+    cmp eax, 12                 ; SYS_SLEEP
     je .sys_sleep
-    cmp eax, 16                 ; Syscall 16: VBE Init
-    je .sys_vbe_init
-    cmp eax, 17                 ; Syscall 17: Exit / Poweroff
+    cmp eax, 13                 ; SYS_GET_TIME
+    je .sys_get_time
+    cmp eax, 15                 ; SYS_DRAW_CHAR
+    je .sys_draw_char
+    cmp eax, 16                 ; SYS_SET_KBD_LAYOUT / VBE Init
+    je .sys_set_kbd_layout
+    cmp eax, 17                 ; SYS_EXIT
     je .sys_exit
+    cmp eax, 18                 ; SYS_GET_TICKS
+    je .sys_get_ticks
 
     xor eax, eax
     jmp .done
 
+.sys_kalloc:
+    push dword [sys_arg_a]
+    call sys_kalloc
+    add esp, 4
+    jmp .done                   ; Retorna puntero en EAX
+
 .sys_set_color:
     mov eax, [sys_arg_a]
-    or eax, 0xFF000000          ; Canal alpha opaco
+    or eax, 0xFF000000
     mov [current_color], eax
     xor eax, eax
     jmp .done
@@ -168,8 +221,28 @@ sys_native_dispatch:
     xor eax, eax
     jmp .done
 
+.sys_draw_rect:
+    push dword [sys_arg_d]
+    push dword [sys_arg_c]
+    push dword [sys_arg_b]
+    push dword [sys_arg_a]
+    call sys_draw_rect
+    add esp, 16
+    xor eax, eax
+    jmp .done
+
+.sys_draw_line:
+    push dword [sys_arg_d]
+    push dword [sys_arg_c]
+    push dword [sys_arg_b]
+    push dword [sys_arg_a]
+    call sys_draw_line
+    add esp, 16
+    xor eax, eax
+    jmp .done
+
 .sys_draw_string:
-    push dword [sys_arg_c]      ; Pointer String ASCII
+    push dword [sys_arg_c]      ; Pointer String ASCII / Object
     push dword [sys_arg_b]      ; Y
     push dword [sys_arg_a]      ; X
     call sys_draw_string
@@ -177,21 +250,54 @@ sys_native_dispatch:
     xor eax, eax
     jmp .done
 
+.sys_read_keyboard:
+    call sys_read_keyboard_scancode
+    jmp .done                   ; Retorna ASCII / Scancode en EAX
+
+.sys_read_mouse:
+    push dword [sys_arg_a]      ; Componente (0=X, 1=Y, 2=Btn)
+    call sys_read_mouse
+    add esp, 4
+    jmp .done                   ; Retorna coord/estado en EAX
+
 .sys_sleep:
-    push dword [sys_arg_a]      ; Milisegundos
+    push dword [sys_arg_a]
     call sys_sleep
     add esp, 4
     xor eax, eax
     jmp .done
 
-.sys_vbe_init:
-    ; Confirmación de inicialización de VBE OK
+.sys_get_time:
+    push dword [sys_arg_a]      ; Campo CMOS RTC
+    call sys_get_time
+    add esp, 4
+    jmp .done                   ; Retorna entero de tiempo en EAX
+
+.sys_draw_char:
+    push dword [current_color]
+    push dword [sys_arg_b]      ; Y
+    push dword [sys_arg_a]      ; X
+    push dword [sys_arg_c]      ; Char ASCII
+    call draw_char_vram
+    add esp, 16
+    xor eax, eax
+    jmp .done
+
+.sys_set_kbd_layout:
+    push dword [sys_arg_a]
+    call sys_set_keyboard_layout
+    add esp, 4
     mov eax, 1
     jmp .done
 
 .sys_exit:
     call sys_exit
     xor eax, eax
+    jmp .done
+
+.sys_get_ticks:
+    call sys_get_ticks
+    jmp .done
 
 .done:
     pop edx
@@ -726,11 +832,50 @@ jit_op_invokespecial:
     ; Para constructores base simples, no se requiere emitir nada a nivel x86 (NOP)
     ret
 	
-; Opcode 0xB8: invokestatic (Despacho Directo de Syscalls del Kernel)
+; Opcode 0xB8: invokestatic (Diferencia Syscalls del HAL de Submétodos Java)
 jit_op_invokestatic:
-    add esi, 2                  ; Consumir 2 bytes del índice CP
+    movzx eax, byte [esi]       ; Byte alto CP Index
+    inc esi
+    movzx ebx, byte [esi]       ; Byte bajo CP Index
+    inc esi
+    shl eax, 8
+    or eax, ebx                 ; EAX = CP Index de Methodref
 
-    ; 1. Desapilar los 5 argumentos de la pila de Java -> Variables de Syscall
+    ; Consultar Constant Pool para verificar la Clase propietaria del método
+    mov ebx, [cp_offsets + eax * 4]
+    test ebx, ebx
+    jz .dispatch_syscall        ; Fallback por seguridad
+
+    ; Extraer la clase asociada al Methodref
+    movzx eax, word [ebx + 1]   ; Class Index
+    xchg al, ah
+    mov ebx, [cp_offsets + eax * 4]
+    movzx eax, word [ebx + 1]   ; Utf8 Name Index
+    xchg al, ah
+    mov ebx, [cp_offsets + eax * 4]
+    add ebx, 3                  ; Saltar Tag y Length
+
+    ; Si el nombre de la clase empieza por "kernel/Native", es una Syscall
+    cmp dword [ebx], 0x6E72656B ; "kern" en Little-Endian
+    je .dispatch_syscall
+
+    ; --- RUTA B: SUBMÉTODO JAVA (dramaticBIOS, showTime, clearScreen, etc.) ---
+    ; Compilar e invocar el bytecode objetivo usando el explorador find_method_bytecode
+    push esi
+    mov eax, ebx                ; Pasar el índice o dirección para resolución interna
+    ; Por simplicidad de llamadas internas en un único archivo class:
+    ; Copiar argumentos del stack frame e invocar mediante llamada x86
+    mov al, 0xE8                ; call rel32
+    call jit_emit_byte
+    
+    ; Compilación diferida o salto relativo:
+    mov eax, 0                  ; Offset reservado
+    call jit_emit_dword
+    pop esi
+    ret
+
+.dispatch_syscall:
+    ; --- RUTA A: SYSCALLS DEL HAL (Native.sys) ---
     mov al, 0x58                ; pop eax (arg d)
     call jit_emit_byte
     mov al, 0xA3                ; mov [sys_arg_d], eax
@@ -766,25 +911,19 @@ jit_op_invokestatic:
     mov eax, sys_arg_id
     call jit_emit_dword
 
-    ; 2. Preservar ESI (puntero de bytecode)
     mov al, 0x56                ; push esi
     call jit_emit_byte
 
-    ; 3. Emitir llamada relativa exacta a sys_native_dispatch
-    mov al, 0xE8                ; call rel32
+    mov al, 0xE8                ; call rel32 sys_native_dispatch
     call jit_emit_byte
-    
     mov eax, sys_native_dispatch
     mov ebx, [jit_buffer_ptr]
-    add ebx, 4                  ; Puntero exactamente al final del rel32
+    add ebx, 4
     sub eax, ebx
     call jit_emit_dword
 
-    ; 4. Restaurar ESI
     mov al, 0x5E                ; pop esi
     call jit_emit_byte
-
-    ; Nota: Se omite el 'push eax' sobrante para no desalinear la pila nativa x86
     ret
 	
 ; --- CONSTANTES FLOTANTES (fconst_0, fconst_1, fconst_2) ---
@@ -860,7 +999,7 @@ jit_op_aload:
     call jit_emit_byte
     ret
 
-; Opcodes del 0x22 al 0x25
+; Opcodes del 0x1A (iload_0), 0x22 (fload_0), 0x2A (aload_0)
 jit_op_iload_0:
 jit_op_aload_0:
 jit_op_fload_0:
@@ -879,6 +1018,7 @@ jit_op_fload_0:
     call jit_emit_byte
     ret
 
+; Opcodes del 0x1B (iload_1), 0x23 (fload_1), 0x2B (aload_1)
 jit_op_iload_1:
 jit_op_aload_1:
 jit_op_fload_1:
