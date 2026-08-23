@@ -478,6 +478,44 @@ jit_op_new:
     call jit_emit_byte
     ret
 
+; Opcode 0xB2: getstatic <index_16bit> (Leer campo estático global)
+jit_op_getstatic:
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx
+
+    mov ebx, [cp_offsets + eax * 4] ; Dirección base de la variable estática en memoria
+
+    mov al, 0xA1                ; mov eax, [absolute_addr]
+    call jit_emit_byte
+    mov eax, ebx
+    call jit_emit_dword
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0xB3: putstatic <index_16bit> (Escribir campo estático global)
+jit_op_putstatic:
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx
+
+    mov ebx, [cp_offsets + eax * 4]
+
+    mov al, 0x58                ; pop eax (value)
+    call jit_emit_byte
+    mov al, 0xA3                ; mov [absolute_addr], eax
+    call jit_emit_byte
+    mov eax, ebx
+    call jit_emit_dword
+    ret
+	
 ; Opcode 0xB4: getfield <index_16bit> (Leer campo de objeto: obj_ref -> value)
 jit_op_getfield:
     movzx eax, byte [esi]
@@ -530,42 +568,47 @@ jit_op_putfield:
     call jit_emit_byte
     ret
 
-; Opcode 0xB2: getstatic <index_16bit> (Leer campo estático global)
-jit_op_getstatic:
+; Opcode 0xB6: invokevirtual <index_16bit>
+jit_op_invokevirtual:
     movzx eax, byte [esi]
     inc esi
     movzx ebx, byte [esi]
     inc esi
     shl eax, 8
-    or eax, ebx
+    or eax, ebx                 ; EAX = Vtable Index / Method Offset
 
-    mov ebx, [cp_offsets + eax * 4] ; Dirección base de la variable estática en memoria
-
-    mov al, 0xA1                ; mov eax, [absolute_addr]
+    ; Desapilar el objeto base para buscar su vtable
+    mov al, 0x5B                ; pop ebx (obj_ref)
     call jit_emit_byte
-    mov eax, ebx
-    call jit_emit_dword
-    mov al, 0x50                ; push eax
+    mov al, 0x53                ; push ebx (volver a empujar como 'this')
+    call jit_emit_byte
+
+    ; Leer el puntero de vtable alojado en [ebx + 4] y llamar al offset
+    mov al, 0x8B                ; mov eax, [ebx + 4]
+    call jit_emit_byte
+    mov al, 0x43
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+
+    mov al, 0xFF                ; call dword [eax + offset]
+    call jit_emit_byte
+    mov al, 0x50
+    call jit_emit_byte
+    mov al, cl                  ; Vtable offset
     call jit_emit_byte
     ret
 
-; Opcode 0xB3: putstatic <index_16bit> (Escribir campo estático global)
-jit_op_putstatic:
-    movzx eax, byte [esi]
-    inc esi
-    movzx ebx, byte [esi]
-    inc esi
-    shl eax, 8
-    or eax, ebx
+; Opcode 0xB9: invokeinterface <index_16bit, count, 0>
+jit_op_invokeinterface:
+    add esi, 2                  ; Consumir 2 bytes de CP Index
+    inc esi                     ; Consumir byte 'count'
+    inc esi                     ; Consumir byte 0 de relleno
+    jmp jit_op_invokevirtual    ; Reorganizar mediante vtable directa
 
-    mov ebx, [cp_offsets + eax * 4]
-
-    mov al, 0x58                ; pop eax (value)
-    call jit_emit_byte
-    mov al, 0xA3                ; mov [absolute_addr], eax
-    call jit_emit_byte
-    mov eax, ebx
-    call jit_emit_dword
+; Opcode 0xBA: invokedynamic <index_16bit, 0, 0>
+jit_op_invokedynamic:
+    add esi, 4                  ; Consumir 4 bytes de operandos de la JVM
     ret
 
 ; Opcode 0xC0: checkcast <index_16bit> (Verificación de tipo)
