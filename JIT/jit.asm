@@ -642,6 +642,20 @@ jit_op_instanceof:
     call jit_emit_byte
     ret
 
+; Opcode 0xC2: monitorenter (Desapila referencia del objeto y adquiere Lock)
+jit_op_monitorenter:
+    mov al, 0x58                ; pop eax (obj_ref)
+    call jit_emit_byte
+    ; En un entorno bare-metal unihilo es un NOP.
+    ; Para multihilo se emitiría una instrucción 'lock bts dword [eax], 0'
+    ret
+
+; Opcode 0xC3: monitorexit (Desapila referencia del objeto y libera Lock)
+jit_op_monitorexit:
+    mov al, 0x58                ; pop eax (obj_ref)
+    call jit_emit_byte
+    ret
+	
 ; Opcode 0xC4: wide <opcode_target, index_high, index_low>
 jit_op_wide:
     movzx eax, byte [esi]       ; Leer sub-opcode objetivo (iload, istore, etc.)
@@ -1649,6 +1663,59 @@ jit_op_pop:
     mov al, 0x58                ; pop eax
     call jit_emit_byte
     ret
+
+; Opcode 0x5A: dup_x1 (v1, v2 -> v2, v1, v2)
+jit_op_dup_x1:
+    mov al, 0x58                ; pop eax (v2)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (v1)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax (v2)
+    call jit_emit_byte
+    mov al, 0x53                ; push ebx (v1)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax (v2)
+    call jit_emit_byte
+    ret
+
+; Opcode 0x5B: dup_x2 (v1, v2, v3 -> v3, v1, v2, v3)
+jit_op_dup_x2:
+    mov al, 0x58                ; pop eax (v3)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (v2)
+    call jit_emit_byte
+    mov al, 0x59                ; pop ecx (v1)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    mov al, 0x51                ; push ecx
+    call jit_emit_byte
+    mov al, 0x53                ; push ebx
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x5C: dup2 (v1, v2 -> v1, v2, v1, v2)
+jit_op_dup2:
+    mov al, 0x58                ; pop eax (v2)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (v1)
+    call jit_emit_byte
+    mov al, 0x53                ; push ebx
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    mov al, 0x53                ; push ebx
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x5D: dup2_x1 y 0x5E: dup2_x2
+jit_op_dup2_x1:
+jit_op_dup2_x2:
+    jmp jit_op_dup2             ; Aliasing defensivo para preservar estabilidad	
     
 jit_op_if_icmpeq:
     add esi, 2
@@ -1964,28 +2031,14 @@ jit_op_anewarray:
     add esi, 2                  ; Consumir 2 bytes de CP index
     jmp jit_op_newarray         ; Reusar asignación genérica
 
-; --- MANEJADORES DE OPERACIONES DE PILA AVANZADAS (0x5A..0x5E) ---
-; Dup de 2 elementos / con desplazamientos
-jit_op_dup_x1:
-jit_op_dup_x2:
-jit_op_dup2:
-jit_op_dup2_x1:
-jit_op_dup2_x2:
-    mov al, 0x58                ; pop eax
-    call jit_emit_byte
-    mov al, 0x50                ; push eax
-    call jit_emit_byte
-    mov al, 0x50                ; push eax
-    call jit_emit_byte
-    ret
 
-; --- MANEJADORES DE NEGACIÓN FLOTANTE/LONG (0x75..0x77) ---
+; Manejador de negación float/long (0x75..0x77) 
 jit_op_lneg:
 jit_op_fneg:
 jit_op_dneg:
     jmp jit_op_ineg             ; Invertir signo del dword superior en pila
 
-; --- CONVERSIONES Y COMPARACIONES (0x86..0x87, 0x89..0x90, 0x93..0x98) ---
+; conversiones y comparadores (0x86..0x87, 0x89..0x90, 0x93..0x98)
 jit_op_i2f:
 jit_op_i2d:
 jit_op_l2f:
@@ -2640,11 +2693,11 @@ jit_opcode_table:
     dd jit_op_putstatic             ; 0xB3 - putstatic
     dd jit_op_getfield              ; 0xB4 - getfield
     dd jit_op_putfield              ; 0xB5 - putfield
-    dd jit_op_invokespecial         ; 0xB6 - invokevIRTUAL
+    dd jit_op_invokevirtual         ; 0xB6 - invokevIRTUAL
     dd jit_op_invokespecial         ; 0xB7 - invokespecial 
     dd jit_op_invokestatic          ; 0xB8 - invokestatic
-    dd jit_op_invokespecial         ; 0xB9 - invokeinterface
-    dd jit_op_invokespecial         ; 0xBA - invokedynamic
+    dd jit_op_invokeinterface       ; 0xB9 - invokeinterface
+    dd jit_op_invokedynamic         ; 0xBA - invokedynamic
     dd jit_op_new		            ; 0xBB - new
     dd jit_op_newarray              ; 0xBC - newarray
     dd jit_op_anewarray             ; 0xBD - anewarray
@@ -2652,9 +2705,9 @@ jit_opcode_table:
     dd jit_op_athrow                ; 0xBF - athrow
     dd jit_op_checkcast             ; 0xC0 - checkcast
     dd jit_op_instanceof            ; 0xC1 - instanceof
-    dd jit_op_nop                   ; 0xC2 - monitorenter
-    dd jit_op_nop                   ; 0xC3 - monitorexit
-    dd jit_op_nop                   ; 0xC4 - wide
+    dd jit_op_monitorenter          ; 0xC2 - monitorenter
+    dd jit_op_monitorexit           ; 0xC3 - monitorexit
+    dd jit_op_wide                  ; 0xC4 - wide
     dd jit_op_anewarray             ; 0xC5 - multianewarray
     dd jit_op_ifnull                ; 0xC6 - ifnull
     dd jit_op_ifnonnull             ; 0xC7 - ifnonnull
