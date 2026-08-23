@@ -1808,7 +1808,217 @@ jit_op_ifnull:
 jit_op_ifnonnull:
     jmp jit_op_ifne
 
-; --- INSTRUCCIONES DE RETORNO Y EXCEPCIONES ADICIONALES (0xAD..0xB0, 0xBF) ---
+; Opcode 0xC8: goto_w <branchbyte1, branchbyte2, branchbyte3, branchbyte4>
+jit_op_goto_w:
+    movzx eax, byte [esi]       ; Byte 1 (MSB)
+    inc esi
+    movzx ebx, byte [esi]       ; Byte 2
+    inc esi
+    movzx ecx, byte [esi]       ; Byte 3
+    inc esi
+    movzx edx, byte [esi]       ; Byte 4 (LSB)
+    inc esi
+
+    shl eax, 24
+    shl ebx, 16
+    shl ecx, 8
+    or eax, ebx
+    or eax, ecx
+    or eax, edx                 ; EAX = Offset de 32 bits (Big-Endian -> Native)
+
+    mov al, 0xE9                ; JMP rel32
+    call jit_emit_byte
+
+    ; Salto relativo en x86: (loop_start_addr) - (jit_buffer_ptr + 4)
+    cmp dword [loop_start_addr], 0
+    je .approx_goto_w
+    mov eax, [loop_start_addr]
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    jmp .emit_goto_w_target
+
+.approx_goto_w:
+    imul eax, eax, 5
+    sub eax, 6
+
+.emit_goto_w_target:
+    call jit_emit_dword
+    ret
+
+; Opcode 0xA8: jsr <branchbyte1, branchbyte2> (Salto a Subrutina)
+jit_op_jsr:
+    ; 1. Calcular el PC de retorno en Bytecode Java (relativo a jit_bytecode_base)
+    mov eax, esi
+    add eax, 2                  ; Dirección de la instrucción posterior a jsr
+    sub eax, [jit_bytecode_base]
+
+    ; 2. Empujar la dirección de retorno en la pila nativa x86
+    push eax
+    mov al, 0x68                ; push imm32
+    call jit_emit_byte
+    pop eax
+    call jit_emit_dword
+
+    ; 3. Emitir salto JMP rel32 al destino
+    mov al, 0xE9
+    call jit_emit_byte
+    call jit_emit_branch_target
+    ret
+
+; Opcode 0xC9: jsr_w <branchbyte1..4> (Salto Largo a Subrutina)
+jit_op_jsr_w:
+    mov eax, esi
+    add eax, 4
+    sub eax, [jit_bytecode_base]
+
+    push eax
+    mov al, 0x68                ; push imm32
+    call jit_emit_byte
+    pop eax
+    call jit_emit_dword
+
+    jmp jit_op_goto_w
+
+; Opcode 0xA9: ret <index_8bit> (Retorno de Subrutina jsr/jsr_w)
+jit_op_ret:
+    movzx ebx, byte [esi]       ; Leer índice de variable local
+    inc esi
+
+    inc ebx
+    shl ebx, 2
+    neg ebx                     ; EBX = -((index + 1) * 4)
+
+    ; Desapilar la dirección devuelta en la variable local y saltar
+    mov al, 0x8B                ; mov eax, [ebp + disp8]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, bl
+    call jit_emit_byte
+
+    mov al, 0xFF                ; jmp eax (0xFF 0xE0)
+    call jit_emit_byte
+    mov al, 0xE0
+    call jit_emit_byte
+    ret
+
+; Opcode 0xAA: tableswitch (Switch denso basado en tabla)
+jit_op_tableswitch:
+    ; 1. Opcional: Alineación del PC en bytecode (múltiplo de 4)
+    mov eax, esi
+    sub eax, [jit_bytecode_base]
+    and eax, 3
+    jz .ts_aligned
+    neg eax
+    add eax, 4
+    add esi, eax                ; Consumir padding
+
+.ts_aligned:
+    ; 2. Leer default, low, high (32-bit Big-Endian cada uno)
+    mov eax, [esi]              ; default_offset
+    bswap eax
+    add esi, 4
+    mov ebx, [esi]              ; low_val
+    bswap ebx
+    add esi, 4
+    mov ecx, [esi]              ; high_val
+    bswap ecx
+    add esi, 4
+
+    ; 3. Desapilar el índice evaluado (key)
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+
+    ; 4. Bounds Check: Si index < low o index > high -> ir a default
+    mov al, 0x3D                ; cmp eax, low_val
+    call jit_emit_byte
+    call jit_emit_dword         ; emite low_val
+
+    mov al, 0x0F                ; JL default (0x0F 0x8C)
+    call jit_emit_byte
+    mov al, 0x8C
+    call jit_emit_byte
+    push eax
+    imul eax, eax, 5
+    call jit_emit_dword
+    pop eax
+
+    mov al, 0x3D                ; cmp eax, high_val
+    call jit_emit_byte
+    mov eax, ecx
+    call jit_emit_dword         ; emite high_val
+
+    mov al, 0x0F                ; JG default (0x0F 0x8F)
+    call jit_emit_byte
+    mov al, 0x8F
+    call jit_emit_byte
+    push eax
+    imul eax, eax, 5
+    call jit_emit_dword
+    pop eax
+
+    ; 5. Consumir la tabla de offsets (num_cases = high - low + 1)
+    sub ecx, ebx
+    inc ecx                     ; ECX = número de entradas
+    shl ecx, 2                  ; ECX = bytes a saltar en esi
+    add esi, ecx
+    ret
+
+; Opcode 0xAB: lookupswitch (Switch disperso basado en parejas key/offset)
+jit_op_lookupswitch:
+    mov eax, esi
+    sub eax, [jit_bytecode_base]
+    and eax, 3
+    jz .ls_aligned
+    neg eax
+    add eax, 4
+    add esi, eax                ; Consumir padding
+
+.ls_aligned:
+    mov eax, [esi]              ; default_offset
+    bswap eax
+    add esi, 4
+    mov ecx, [esi]              ; npairs (cantidad de parejas)
+    bswap ecx
+    add esi, 4
+
+    mov al, 0x58                ; pop eax (key buscada)
+    call jit_emit_byte
+
+.ls_loop:
+    test ecx, ecx
+    jz .ls_done
+
+    mov ebx, [esi]              ; match key
+    bswap ebx
+    add esi, 4
+    mov edx, [esi]              ; offset
+    bswap edx
+    add esi, 4
+
+    mov al, 0x3D                ; cmp eax, match_key
+    call jit_emit_byte
+    mov eax, ebx
+    call jit_emit_dword
+
+    mov al, 0x0F                ; JE target (0x0F 0x84)
+    call jit_emit_byte
+    mov al, 0x84
+    call jit_emit_byte
+    push eax
+    mov eax, edx
+    imul eax, eax, 5
+    call jit_emit_dword
+    pop eax
+
+    dec ecx
+    jmp .ls_loop
+
+.ls_done:
+    ret	
+
+; INSTRUCCIONES DE RETORNO Y EXCEPCIONES ADICIONALES (0xAD..0xB0, 0xBF)
 jit_op_lreturn:
 jit_op_freturn:
 jit_op_dreturn:
@@ -2163,10 +2373,10 @@ jit_opcode_table:
     dd jit_op_if_acmpeq             ; 0xA5 - if_acmpeq
     dd jit_op_if_acmpne             ; 0xA6 - if_acmpne
     dd jit_op_goto                  ; 0xA7 - goto
-    dd jit_op_goto                  ; 0xA8 - jsr
-    dd jit_op_nop                   ; 0xA9 - ret
-    dd jit_op_nop                   ; 0xAA - tableswitch
-    dd jit_op_nop                   ; 0xAB - lookupswitch
+    dd jit_op_jsr                   ; 0xA8 - jsr
+    dd jit_op_ret                   ; 0xA9 - ret
+    dd jit_op_lookupswitch          ; 0xAA - tableswitch
+    dd jit_op_lookupswitch          ; 0xAB - lookupswitch
     dd jit_op_ireturn               ; 0xAC - ireturn
     dd jit_op_lreturn               ; 0xAD - lreturn
     dd jit_op_freturn               ; 0xAE - freturn
@@ -2195,8 +2405,8 @@ jit_opcode_table:
     dd jit_op_anewarray             ; 0xC5 - multianewarray
     dd jit_op_ifnull                ; 0xC6 - ifnull
     dd jit_op_ifnonnull             ; 0xC7 - ifnonnull
-    dd jit_op_goto                  ; 0xC8 - goto_w
-    dd jit_op_goto                  ; 0xC9 - jsr_w
+    dd jit_op_goto_w                ; 0xC8 - goto_w
+    dd jit_op_jsr_w                 ; 0xC9 - jsr_w
     times 54 dd jit_op_nop          ; 0xCA..0xFF - Reservados e instrucciones extendidas
 
 section .note.GNU-stack noalloc noexec nowrite progbits
