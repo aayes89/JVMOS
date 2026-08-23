@@ -609,7 +609,7 @@ jit_op_invokeinterface:
 ; Opcode 0xBA: invokedynamic <index_16bit, 0, 0>
 jit_op_invokedynamic:
     add esi, 4                  ; Consumir 4 bytes de operandos de la JVM
-    ret
+    ret							; stub por el momento
 
 ; Opcode 0xC0: checkcast <index_16bit> (Verificación de tipo)
 jit_op_checkcast:
@@ -640,6 +640,49 @@ jit_op_instanceof:
     call jit_emit_byte
     mov al, 0x50                ; push eax (resultado boolean 1/0)
     call jit_emit_byte
+    ret
+
+; Opcode 0xC4: wide <opcode_target, index_high, index_low>
+jit_op_wide:
+    movzx eax, byte [esi]       ; Leer sub-opcode objetivo (iload, istore, etc.)
+    inc esi
+    movzx ebx, byte [esi]       ; Index High
+    inc esi
+    movzx ecx, byte [esi]       ; Index Low
+    inc esi
+    shl ebx, 8
+    or ebx, ecx                 ; EBX = Índice de 16 bits
+
+    inc ebx
+    shl ebx, 2
+    neg ebx                     ; EBX = Offset negativo en EBP (-((index + 1) * 4))
+
+    cmp al, 0x15                ; iload
+    je .wide_load
+    cmp al, 0x36                ; istore
+    je .wide_store
+    ret
+
+.wide_load:
+    mov al, 0x8B                ; mov eax, [ebp + disp32]
+    call jit_emit_byte
+    mov al, 0x85
+    call jit_emit_byte
+    mov eax, ebx
+    call jit_emit_dword
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+.wide_store:
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp + disp32], eax
+    call jit_emit_byte
+    mov al, 0x85
+    call jit_emit_byte
+    mov eax, ebx
+    call jit_emit_dword
     ret
 	
 ; Opcode 0xB7: invokespecial <method_index_16bit>
