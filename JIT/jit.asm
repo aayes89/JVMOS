@@ -93,7 +93,13 @@ jit_emit_prologue:
     call jit_emit_byte
     mov al, 0xE5
     call jit_emit_byte
-    mov al, 0x81                ; sub esp, 128 (Espacio seguro para 32 variables locales de 32-bit)
+    mov al, 0x53                ; push ebx  (preservar ABI)
+    call jit_emit_byte
+    mov al, 0x56                ; push esi  (preservar ABI)
+    call jit_emit_byte
+    mov al, 0x57                ; push edi  (preservar ABI)
+    call jit_emit_byte
+    mov al, 0x81                ; sub esp, 128
     call jit_emit_byte
     mov al, 0xEC
     call jit_emit_byte
@@ -102,9 +108,17 @@ jit_emit_prologue:
     ret
 
 jit_emit_epilogue:
-    mov al, 0x89                ; mov esp, ebp
+    mov al, 0x8D                ; lea esp, [ebp - 12] (restaurar espacio de regs)
     call jit_emit_byte
-    mov al, 0xEC
+    mov al, 0x65
+    call jit_emit_byte
+    mov al, 0xF4
+    call jit_emit_byte
+    mov al, 0x5F                ; pop edi
+    call jit_emit_byte
+    mov al, 0x5E                ; pop esi
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx
     call jit_emit_byte
     mov al, 0x5D                ; pop ebp
     call jit_emit_byte
@@ -446,14 +460,14 @@ jit_op_new:
     test ebx, ebx
     jz .new_fallback
 
-    ; Supuesto bare-metal: [ebx + 1] almacena el tamaño en bytes de la instancia (ej. 32 bytes)
+    ; Leer el tamaño de la instancia (16 bits Big-Endian)
     movzx eax, word [ebx + 1]
-    bswap ax                    ; Convertir Big-Endian si aplica
+    xchg al, ah                 ; CORREGIDO: Intercambio correcto de bytes para 16 bits (Big-Endian -> Little-Endian)
     add eax, 8                  ; +8 bytes para encabezado del objeto (metadatos + class_ptr)
     jmp .alloc_obj
 
 .new_fallback:
-    mov eax, 32                 ; Tamaña por defecto si no hay CP resoluble
+    mov eax, 32                 ; Tamaño por defecto si no hay CP resoluble
 
 .alloc_obj:
     ; 2. Llamar a sys_kalloc(bytes)
@@ -698,6 +712,13 @@ jit_op_wide:
     mov eax, ebx
     call jit_emit_dword
     ret
+
+; Opcode 0xC5: multianewarray <index_16bit, dimensions_8bit>
+jit_op_multianewarray:
+    add esi, 2                  ; Consumir 2 bytes de CP index
+    movzx eax, byte [esi]       ; Consumir byte de dimensiones
+    inc esi
+    jmp jit_op_newarray         ; Redirigir la asignación base
 	
 ; Opcode 0xB7: invokespecial <method_index_16bit>
 jit_op_invokespecial:
@@ -705,33 +726,33 @@ jit_op_invokespecial:
     ; Para constructores base simples, no se requiere emitir nada a nivel x86 (NOP)
     ret
 	
-; Opcode 0xB8: invokestatic (Despacho Directo de Syscalls)
+; Opcode 0xB8: invokestatic (Despacho Directo de Syscalls del Kernel)
 jit_op_invokestatic:
     add esi, 2                  ; Consumir 2 bytes del índice CP
 
-    ; 1. Desapilar argumentos Java -> Variables de Syscall del Kernel
-    mov al, 0x58                ; pop eax (arg4)
+    ; 1. Desapilar los 5 argumentos de la pila de Java -> Variables de Syscall
+    mov al, 0x58                ; pop eax (arg d)
     call jit_emit_byte
     mov al, 0xA3                ; mov [sys_arg_d], eax
     call jit_emit_byte
     mov eax, sys_arg_d
     call jit_emit_dword
 
-    mov al, 0x58                ; pop eax (arg3)
+    mov al, 0x58                ; pop eax (arg c)
     call jit_emit_byte
     mov al, 0xA3                ; mov [sys_arg_c], eax
     call jit_emit_byte
     mov eax, sys_arg_c
     call jit_emit_dword
 
-    mov al, 0x58                ; pop eax (arg2)
+    mov al, 0x58                ; pop eax (arg b)
     call jit_emit_byte
     mov al, 0xA3                ; mov [sys_arg_b], eax
     call jit_emit_byte
     mov eax, sys_arg_b
     call jit_emit_dword
 
-    mov al, 0x58                ; pop eax (arg1)
+    mov al, 0x58                ; pop eax (arg a)
     call jit_emit_byte
     mov al, 0xA3                ; mov [sys_arg_a], eax
     call jit_emit_byte
@@ -745,24 +766,25 @@ jit_op_invokestatic:
     mov eax, sys_arg_id
     call jit_emit_dword
 
-    ; 2. Preservar el puntero de instrucción del Bytecode ESI
+    ; 2. Preservar ESI (puntero de bytecode)
     mov al, 0x56                ; push esi
     call jit_emit_byte
 
-    ; 3. Invocación nativa directa al Kernel Dispatcher
+    ; 3. Emitir llamada relativa exacta a sys_native_dispatch
     mov al, 0xE8                ; call rel32
     call jit_emit_byte
-    mov eax, sys_native_dispatch ; Función unificada en jit.asm / sys_api.asm
+    
+    mov eax, sys_native_dispatch
     mov ebx, [jit_buffer_ptr]
-    add ebx, 4
+    add ebx, 4                  ; Puntero exactamente al final del rel32
     sub eax, ebx
     call jit_emit_dword
 
-    ; 4. Restaurar ESI y empujar resultado
+    ; 4. Restaurar ESI
     mov al, 0x5E                ; pop esi
     call jit_emit_byte
-    mov al, 0x50                ; push eax
-    call jit_emit_byte
+
+    ; Nota: Se omite el 'push eax' sobrante para no desalinear la pila nativa x86
     ret
 	
 ; --- CONSTANTES FLOTANTES (fconst_0, fconst_1, fconst_2) ---
@@ -1521,8 +1543,24 @@ jit_op_if_icmple:
 
 ; Manejo de arreglos (iaload, iastore, arraylength) ---
 ; Opcode 0x2E: iaload
-; Opcode 0x32: aaload
 jit_op_iaload:
+    mov al, 0x59                ; pop ecx (index)
+    call jit_emit_byte
+    mov al, 0x58                ; pop eax (arrayref)
+    call jit_emit_byte
+    mov al, 0x8B                ; mov eax, [eax + ecx * 4 + 8]
+    call jit_emit_byte
+    mov al, 0x44
+    call jit_emit_byte
+    mov al, 0x88
+    call jit_emit_byte
+    mov al, 0x08                ; Offset +8 de cabecera
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0x32: aaload	
 jit_op_aaload:
     mov al, 0x59                ; pop ecx (index)
     call jit_emit_byte
@@ -1560,13 +1598,15 @@ jit_op_saload:
     call jit_emit_byte
     mov al, 0x5B                ; pop ebx (arrayref)
     call jit_emit_byte
-    mov al, 0x0F                ; movsx eax, word [ebx + ecx * 2]
+    mov al, 0x0F                ; movsx eax, word [ebx + ecx * 2 + 8]
     call jit_emit_byte
     mov al, 0xBF
     call jit_emit_byte
-    mov al, 0x04
+    mov al, 0x4C
     call jit_emit_byte
     mov al, 0x4B
+    call jit_emit_byte
+    mov al, 0x08                ; Offset +8 de cabecera
     call jit_emit_byte
     mov al, 0x50                ; push eax
     call jit_emit_byte
@@ -2211,7 +2251,7 @@ jit_op_ret:
 
 ; Opcode 0xAA: tableswitch (Switch denso basado en tabla)
 jit_op_tableswitch:
-    ; 1. Opcional: Alineación del PC en bytecode (múltiplo de 4)
+    ; Opcional: Alineación del PC en bytecode (múltiplo de 4)
     mov eax, esi
     sub eax, [jit_bytecode_base]
     and eax, 3
@@ -2221,7 +2261,7 @@ jit_op_tableswitch:
     add esi, eax                ; Consumir padding
 
 .ts_aligned:
-    ; 2. Leer default, low, high (32-bit Big-Endian cada uno)
+    ; Leer default, low, high (32-bit Big-Endian cada uno)
     mov eax, [esi]              ; default_offset
     bswap eax
     add esi, 4
@@ -2232,14 +2272,15 @@ jit_op_tableswitch:
     bswap ecx
     add esi, 4
 
-    ; 3. Desapilar el índice evaluado (key)
+    ; Desapilar el índice evaluado (key)
     mov al, 0x58                ; pop eax
     call jit_emit_byte
 
-    ; 4. Bounds Check: Si index < low o index > high -> ir a default
-    mov al, 0x3D                ; cmp eax, low_val
+    ; Bounds Check: Si index < low o index > high -> ir a default
+    mov al, 0x3D                ; cmp eax, low_val (imm32)
     call jit_emit_byte
-    call jit_emit_dword         ; emite low_val
+    mov eax, ebx                ; Asegurar que low_val esté en EAX
+    call jit_emit_dword
 
     mov al, 0x0F                ; JL default (0x0F 0x8C)
     call jit_emit_byte
@@ -2250,10 +2291,10 @@ jit_op_tableswitch:
     call jit_emit_dword
     pop eax
 
-    mov al, 0x3D                ; cmp eax, high_val
+    mov al, 0x3D                ; cmp eax, high_val (imm32)
     call jit_emit_byte
-    mov eax, ecx
-    call jit_emit_dword         ; emite high_val
+    mov eax, ecx                ; Asegurar que high_val esté en EAX
+    call jit_emit_dword
 
     mov al, 0x0F                ; JG default (0x0F 0x8F)
     call jit_emit_byte
@@ -2264,7 +2305,7 @@ jit_op_tableswitch:
     call jit_emit_dword
     pop eax
 
-    ; 5. Consumir la tabla de offsets (num_cases = high - low + 1)
+    ; Consumir la tabla de offsets (num_cases = high - low + 1)
     sub ecx, ebx
     inc ecx                     ; ECX = número de entradas
     shl ecx, 2                  ; ECX = bytes a saltar en esi
@@ -2368,7 +2409,7 @@ jit_op_unsupported:
     add bl, '0'
     ret
 
-; Helper para emitir calculo de salto
+; Helper para emitir cálculo de salto
 ; Lee los 2 bytes Big-Endian del bytecode (ESI) y emite un salto relativo x86
 jit_emit_branch_target:
     movzx eax, byte [esi]       ; Byte alto del offset Java (Big-Endian)
@@ -2377,30 +2418,36 @@ jit_emit_branch_target:
     inc esi
     shl eax, 8
     or eax, ebx
-    movsx eax, ax               ; Extension de signo (Offset Java)
+    movsx eax, ax               ; Extensión de signo (Offset Java de 16 bits)
 
-    ; Si el salto es hacia atrás (offset negativo, ej: goto de retorno de bucle)
+    ; Comprobar dirección del salto
     cmp eax, 0
     jl .backwards_jump
 
-    ; Salto hacia adelante (if/else): aproximación lineal del buffer nativo x86 (~5x)
+    ; salto adelante (if / else / forward goto) 
+    ; Descontar los 2 bytes de operando del bytecode ya consumidos en ESI
+    sub eax, 2
+    
+    ; Multiplicador promedio de expansión Bytecode -> Native x86
+    ; Ajustamos descontando 4 bytes del imm32 que se va a emitir
     imul eax, eax, 5
-    sub eax, 6
     jmp .emit_rel
 
 .backwards_jump:
-    ; Si hay una marca de bucle activa, calcular distancia exacta hacia la marca
+    ; salto atrás (loops / backward goto) 
+    ; Si existe una marca de inicio de bucle activa, calcular distancia exacta en buffer
     cmp dword [loop_start_addr], 0
     je .approx_backwards
+
     mov eax, [loop_start_addr]
     mov ebx, [jit_buffer_ptr]
-    add ebx, 4
+    add ebx, 4                  ; Desplazamiento del imm32 x86
     sub eax, ebx
     jmp .emit_rel
 
 .approx_backwards:
+    ; Respaldo si no hay marca: cálculo estimado
     imul eax, eax, 5
-    sub eax, 6
 
 .emit_rel:
     call jit_emit_dword
@@ -2576,10 +2623,10 @@ jit_opcode_table:
     dd jit_op_istore_3              ; 0x3E - istore_3 
     dd jit_op_lstore_0              ; 0x3F - lstore_0
     dd jit_op_lstore_1              ; 0x40 - lstore_1
-    dd jit_op_istore_2              ; 0x41 - fstore_0
-    dd jit_op_istore_3              ; 0x42 - fstore_1
-    dd jit_op_istore_4              ; 0x43 - fstore_2
-    dd jit_op_istore_5              ; 0x44 - fstore_3
+    dd jit_op_istore_0              ; 0x41 - fstore_0
+    dd jit_op_istore_1              ; 0x42 - fstore_1
+    dd jit_op_istore_2              ; 0x43 - fstore_2
+    dd jit_op_istore_3              ; 0x44 - fstore_3
     dd jit_op_lstore_0              ; 0x45 - dstore_0
     dd jit_op_lstore_1              ; 0x46 - dstore_1
     dd jit_op_astore_0              ; 0x47 - astore_0 
@@ -2597,7 +2644,7 @@ jit_opcode_table:
     dd jit_op_aastore               ; 0x53 - aastore 
     dd jit_op_bastore               ; 0x54 - bastore 
     dd jit_op_castore               ; 0x55 - castore 
-    dd jit_op_sastore               ; 0x56 - sastore 
+    dd jit_op_sastore               ; 0x56 - sastore
     dd jit_op_pop                   ; 0x57 - pop 
     dd jit_op_pop                   ; 0x58 - pop2
     dd jit_op_dup                   ; 0x59 - dup
@@ -2681,7 +2728,7 @@ jit_opcode_table:
     dd jit_op_goto                  ; 0xA7 - goto
     dd jit_op_jsr                   ; 0xA8 - jsr
     dd jit_op_ret                   ; 0xA9 - ret
-    dd jit_op_lookupswitch          ; 0xAA - tableswitch
+    dd jit_op_tableswitch           ; 0xAA - tableswitch
     dd jit_op_lookupswitch          ; 0xAB - lookupswitch
     dd jit_op_ireturn               ; 0xAC - ireturn
     dd jit_op_lreturn               ; 0xAD - lreturn
@@ -2708,7 +2755,7 @@ jit_opcode_table:
     dd jit_op_monitorenter          ; 0xC2 - monitorenter
     dd jit_op_monitorexit           ; 0xC3 - monitorexit
     dd jit_op_wide                  ; 0xC4 - wide
-    dd jit_op_anewarray             ; 0xC5 - multianewarray
+    dd jit_op_multianewarray        ; 0xC5 - multianewarray
     dd jit_op_ifnull                ; 0xC6 - ifnull
     dd jit_op_ifnonnull             ; 0xC7 - ifnonnull
     dd jit_op_goto_w                ; 0xC8 - goto_w
