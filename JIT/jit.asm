@@ -432,6 +432,173 @@ jit_op_ldc_w:
     call jit_emit_dword
     ret
 
+; Opcode 0xBB: new <index_16bit> (Asignación de nueva instancia de objeto)
+jit_op_new:
+    movzx eax, byte [esi]       ; Byte alto del CP index
+    inc esi
+    movzx ebx, byte [esi]       ; Byte bajo del CP index
+    inc esi
+    shl eax, 8
+    or eax, ebx                 ; EAX = Index en Constant Pool
+
+    ; 1. Consultar offset del Class Info en CP
+    mov ebx, [cp_offsets + eax * 4]
+    test ebx, ebx
+    jz .new_fallback
+
+    ; Supuesto bare-metal: [ebx + 1] almacena el tamaño en bytes de la instancia (ej. 32 bytes)
+    movzx eax, word [ebx + 1]
+    bswap ax                    ; Convertir Big-Endian si aplica
+    add eax, 8                  ; +8 bytes para encabezado del objeto (metadatos + class_ptr)
+    jmp .alloc_obj
+
+.new_fallback:
+    mov eax, 32                 ; Tamaña por defecto si no hay CP resoluble
+
+.alloc_obj:
+    ; 2. Llamar a sys_kalloc(bytes)
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    mov al, 0xE8                ; call rel32 sys_kalloc
+    call jit_emit_byte
+    mov eax, sys_kalloc
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    mov al, 0x83                ; add esp, 4
+    call jit_emit_byte
+    mov al, 0xC4
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+
+    ; 3. Empujar la referencia del objeto instanciado a la pila nativa
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0xB4: getfield <index_16bit> (Leer campo de objeto: obj_ref -> value)
+jit_op_getfield:
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx                 ; EAX = Field CP Index
+
+    ; Offset del campo (en un motor JIT plano bare-metal, extraemos el field_offset)
+    ; Mapeamos el índice directamente a un offset multiplicando o leyendo del CP
+    mov ecx, eax
+    shl ecx, 2                  ; Offset = index * 4
+    add ecx, 8                  ; +8 para saltar el encabezado del objeto
+
+    mov al, 0x58                ; pop eax (obj_ref)
+    call jit_emit_byte
+    mov al, 0x8B                ; mov eax, [eax + disp8/disp32]
+    call jit_emit_byte
+    mov al, 0x40                ; ModRM: [eax + disp8]
+    call jit_emit_byte
+    mov al, cl                  ; Offset del campo
+    call jit_emit_byte
+    mov al, 0x50                ; push eax (valor del campo)
+    call jit_emit_byte
+    ret
+
+; Opcode 0xB5: putfield <index_16bit> (Escribir campo de objeto: obj_ref, value -> )
+jit_op_putfield:
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx
+
+    mov ecx, eax
+    shl ecx, 2
+    add ecx, 8                  ; Offset = (index * 4) + 8
+
+    mov al, 0x58                ; pop eax (value)
+    call jit_emit_byte
+    mov al, 0x5B                ; pop ebx (obj_ref)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebx + disp8], eax
+    call jit_emit_byte
+    mov al, 0x43
+    call jit_emit_byte
+    mov al, cl                  ; Offset del campo
+    call jit_emit_byte
+    ret
+
+; Opcode 0xB2: getstatic <index_16bit> (Leer campo estático global)
+jit_op_getstatic:
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx
+
+    mov ebx, [cp_offsets + eax * 4] ; Dirección base de la variable estática en memoria
+
+    mov al, 0xA1                ; mov eax, [absolute_addr]
+    call jit_emit_byte
+    mov eax, ebx
+    call jit_emit_dword
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Opcode 0xB3: putstatic <index_16bit> (Escribir campo estático global)
+jit_op_putstatic:
+    movzx eax, byte [esi]
+    inc esi
+    movzx ebx, byte [esi]
+    inc esi
+    shl eax, 8
+    or eax, ebx
+
+    mov ebx, [cp_offsets + eax * 4]
+
+    mov al, 0x58                ; pop eax (value)
+    call jit_emit_byte
+    mov al, 0xA3                ; mov [absolute_addr], eax
+    call jit_emit_byte
+    mov eax, ebx
+    call jit_emit_dword
+    ret
+
+; Opcode 0xC0: checkcast <index_16bit> (Verificación de tipo)
+jit_op_checkcast:
+    add esi, 2                  ; Consumir los 2 bytes de índice CP
+    ; En bare-metal simplificado: si obj_ref != null no falla. Mantiene el objeto en la pila.
+    ret
+
+; Opcode 0xC1: instanceof <index_16bit> (Comprobación de tipo -> 1 o 0 en la pila)
+jit_op_instanceof:
+    add esi, 2                  ; Consumir 2 bytes de CP index
+    mov al, 0x58                ; pop eax (obj_ref)
+    call jit_emit_byte
+    mov al, 0x85                ; test eax, eax
+    call jit_emit_byte
+    mov al, 0xC0
+    call jit_emit_byte
+    mov al, 0x0F                ; setne al (1 si obj_ref != NULL, 0 si es NULL)
+    call jit_emit_byte
+    mov al, 0x95
+    call jit_emit_byte
+    mov al, 0xC0
+    call jit_emit_byte
+    mov al, 0x0F                ; movzx eax, al
+    call jit_emit_byte
+    mov al, 0xB6
+    call jit_emit_byte
+    mov al, 0xC0
+    call jit_emit_byte
+    mov al, 0x50                ; push eax (resultado boolean 1/0)
+    call jit_emit_byte
+    ret
+	
 ; Opcode 0xB7: invokespecial <method_index_16bit>
 jit_op_invokespecial:
     add esi, 2                  ; Ignorar índice del CP (Constructor vacío Object.<init>)
@@ -2383,22 +2550,22 @@ jit_opcode_table:
     dd jit_op_dreturn               ; 0xAF - dreturn
     dd jit_op_areturn               ; 0xB0 - areturn
     dd jit_op_return                ; 0xB1 - return
-    dd jit_op_nop                   ; 0xB2 - getstatic
-    dd jit_op_nop                   ; 0xB3 - putstatic
-    dd jit_op_nop                   ; 0xB4 - getfield
-    dd jit_op_nop                   ; 0xB5 - putfield
+    dd jit_op_getstatic             ; 0xB2 - getstatic
+    dd jit_op_putstatic             ; 0xB3 - putstatic
+    dd jit_op_getfield              ; 0xB4 - getfield
+    dd jit_op_putfield              ; 0xB5 - putfield
     dd jit_op_invokespecial         ; 0xB6 - invokevIRTUAL
     dd jit_op_invokespecial         ; 0xB7 - invokespecial 
     dd jit_op_invokestatic          ; 0xB8 - invokestatic
     dd jit_op_invokespecial         ; 0xB9 - invokeinterface
     dd jit_op_invokespecial         ; 0xBA - invokedynamic
-    dd jit_op_newarray              ; 0xBB - new
+    dd jit_op_new		            ; 0xBB - new
     dd jit_op_newarray              ; 0xBC - newarray
     dd jit_op_anewarray             ; 0xBD - anewarray
     dd jit_op_arraylength           ; 0xBE - arraylength 
     dd jit_op_athrow                ; 0xBF - athrow
-    dd jit_op_nop                   ; 0xC0 - checkcast
-    dd jit_op_nop                   ; 0xC1 - instanceof
+    dd jit_op_checkcast             ; 0xC0 - checkcast
+    dd jit_op_instanceof            ; 0xC1 - instanceof
     dd jit_op_nop                   ; 0xC2 - monitorenter
     dd jit_op_nop                   ; 0xC3 - monitorexit
     dd jit_op_nop                   ; 0xC4 - wide
