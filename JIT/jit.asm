@@ -18,6 +18,7 @@ align 16
 	fixup_addr:		 resd 1024	; donde sobreescribir métodos nativos
 	fixup_target: 	 resd 1024  ; a cual PC del bytecode apuntaba
     fixup_count:  	 resd 1     ; contador de saltos hacia adelante
+	method_cache: 	 resd 2048	; Mapea [CP_Index] -> [Dirección Nativa]
 
 section .data
     jit_bytecode_base: dd 0
@@ -34,6 +35,7 @@ section .text
     global jit_init
     global jit_compile_method
     global jit_execute_method
+	global jit_runtime_trampoline
     
     global jit_test_phase1
     global jit_test_phase2
@@ -43,9 +45,11 @@ section .text
     global jit_test_phase6
         
 	global sys_native_dispatch
+	extern resolve_and_compile_java_method
 	extern sys_kalloc
 	extern cp_base_ptr
 	extern cp_offsets
+	extern current_param_count
 	; Símbolos de Syscalls del Kernel (de jvm_native.asm / sys_api.asm)	
 	extern sys_arg_id, sys_arg_a, sys_arg_b, sys_arg_c, sys_arg_d			
 	extern draw_char_vram, sys_draw_string, sys_serial_puts
@@ -104,6 +108,33 @@ jit_emit_dword:
     cli
     hlt
 
+jit_runtime_trampoline:
+    ; EAX contiene el CP_Index. La pila tiene los parámetros y la dirección de retorno.
+    pusha                       ; Guardar el estado nativo completo
+
+    ; ¿Está en la caché?
+    mov ebx, [method_cache + eax * 4]
+    test ebx, ebx
+    jnz .execute_method
+
+    ; No está compilado. Llamar al núcleo para buscar el bytecode y compilarlo.
+    push eax                    ; Pasar CP_Index
+    call resolve_and_compile_java_method
+    add esp, 4
+    
+    ; EAX ahora contiene la dirección física x86 del método recién compilado
+    mov ebx, [esp + 28]         ; Recuperar el CP_Index original (salvado en pusha)
+    mov [method_cache + ebx * 4], eax ; Guardarlo en caché
+    mov ebx, eax
+
+.execute_method:
+    ; EBX = Dirección nativa del método Java
+    mov [esp + 28], ebx         ; Sobrescribir el campo EAX del pusha con la dirección destino
+    popa                        ; Restaurar todos los registros 
+	; EAX ahora es la dirección destino    
+    ; Saltar directamente al método.
+    jmp eax
+
 jit_emit_prologue:
     mov al, 0x55                ; push ebp
     call jit_emit_byte
@@ -119,12 +150,81 @@ jit_emit_prologue:
     mov al, 0x57                ; push edi  -> [ebp - 12]
     call jit_emit_byte
 
-    mov al, 0x81                ; sub esp, 128 (Locals 0-31 reside at ebp-16 to ebp-144)
+    mov al, 0x81                ; sub esp, 128
     call jit_emit_byte
     mov al, 0xEC
     call jit_emit_byte
     mov eax, 128
     call jit_emit_dword
+
+    ; Copiar parametros en el orden correcto
+    mov ecx, [current_param_count]
+    test ecx, ecx
+    jz .no_params
+
+    ; mov ecx, <param_count>
+    mov al, 0xB9
+    call jit_emit_byte
+    mov eax, ecx
+    call jit_emit_dword
+    
+    ; lea esi, [ebp + ecx*4 + 4] (Origen: Primer argumento apilado)
+    mov al, 0x8D
+    call jit_emit_byte
+    mov al, 0x74
+    call jit_emit_byte
+    mov al, 0x8D
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    
+    ; lea edi, [ebp - 16] (Destino: Variable Local 0)
+    mov al, 0x8D
+    call jit_emit_byte
+    mov al, 0x7D
+    call jit_emit_byte
+    mov al, 0xF0
+    call jit_emit_byte
+
+    ; .copy_loop: mov eax, [esi]
+    mov al, 0x8B
+    call jit_emit_byte
+    mov al, 0x06
+    call jit_emit_byte
+    
+    ; mov [edi], eax
+    mov al, 0x89
+    call jit_emit_byte
+    mov al, 0x07
+    call jit_emit_byte
+    
+    ; sub esi, 4 (Descender al siguiente argumento nativo)
+    mov al, 0x83
+    call jit_emit_byte
+    mov al, 0xEE
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    
+    ; sub edi, 4 (Descender a la siguiente Variable Local)
+    mov al, 0x83
+    call jit_emit_byte
+    mov al, 0xEF
+    call jit_emit_byte
+    mov al, 0x04
+    call jit_emit_byte
+    
+    ; dec ecx
+    mov al, 0x49
+    call jit_emit_byte
+    
+    ; jnz .copy_loop (-13 bytes = 0xF3)
+    mov al, 0x75
+    call jit_emit_byte
+    mov al, 0xF3
+    call jit_emit_byte
+    
+.no_params:
     ret
 
 jit_emit_epilogue:
@@ -132,7 +232,7 @@ jit_emit_epilogue:
     call jit_emit_byte
     mov al, 0x65
     call jit_emit_byte
-    mov al, 0xF4                ; -12 in 8-bit two's complement
+    mov al, 0xF4                
     call jit_emit_byte
 
     mov al, 0x5F                ; pop edi
@@ -143,7 +243,27 @@ jit_emit_epilogue:
     call jit_emit_byte
     mov al, 0x5D                ; pop ebp
     call jit_emit_byte
-    mov al, 0xC3                ; ret
+    
+    ; Retorno con limpieza de pila STD_CALL
+    mov eax, [current_param_count]
+    test eax, eax
+    jz .ret_simple
+    
+    ; ret N (Donde N = param_count * 4)
+    shl eax, 2
+    push eax
+    mov al, 0xC2                ; ret imm16
+    call jit_emit_byte
+    pop eax
+    push eax
+    call jit_emit_byte
+    pop eax
+    shr eax, 8
+    call jit_emit_byte
+    ret
+    
+.ret_simple:
+    mov al, 0xC3                ; ret clásico
     call jit_emit_byte
     ret
 
@@ -306,25 +426,26 @@ jit_compile_method:
     push esi
     push edi
 
+	; Capturar el cursor base
+	mov eax, [jit_buffer_ptr]
+	push eax 
+	
     ; Limpiar marcas de bucles
     mov dword [loop_start_addr], 0
     mov dword [fixup_count], 0
     mov [jit_bytecode_base], esi
 
-    ; Forzar reinicio del cursor al inicio de la memoria asignada
-    mov eax, 0x00200000
-    mov ebx, 65536
-    call jit_init
-
     push esi                    ; Preservar ESI para el compilador
+	push ecx					; Proteger el tamaño del bytecode
     call jit_emit_prologue
+	pop ecx						; Restauro ECX
 
     mov edi, esi
     add edi, ecx                ; EDI = Fin exacto del bytecode
 
 .compile_loop:
     cmp esi, edi
-    jae .resolve_fixups         ; En lugar de terminar directo, vamos a parchear saltos
+    jae .resolve_fixups         ; Un parche para los saltos
 
     ; Registrar la correspondencia PC -> Dirección Nativa
     mov ecx, esi
@@ -340,8 +461,7 @@ jit_compile_method:
 
     jmp .compile_loop
 
-.resolve_fixups:
-    ; Parchear los saltos hacia adelante
+.resolve_fixups:    ; Parchear los saltos hacia adelante
     mov ecx, [fixup_count]
     test ecx, ecx
     jz .compile_done            ; Si no hay saltos pendientes, terminar
@@ -363,8 +483,9 @@ jit_compile_method:
     jb .fixup_loop
 
 .compile_done:
-    pop esi                     ; Restaurar ESI original
-    mov eax, [jit_buffer_base]  ; Retornar 0x00200000 en EAX
+	; Restaurar los registros desde la pila
+    pop esi                     
+    pop eax						
     pop edi
     pop esi
     pop ebx
@@ -743,42 +864,14 @@ jit_op_putfield:
     ret
 
 ; Opcode 0xB6: invokevirtual <index_16bit>
+; Opcode 0xB7: invokespecial <method_index_16bit>
 jit_op_invokevirtual:
-    movzx eax, byte [esi]
-    inc esi
-    movzx ebx, byte [esi]
-    inc esi
-    shl eax, 8
-    or eax, ebx                 ; EAX = Vtable Index
-
-    mov ecx, eax
-    shl ecx, 2                  ; ECX = offset en bytes (index * 4)
-
-    mov al, 0x5B                ; pop ebx (obj_ref)
-    call jit_emit_byte
-    mov al, 0x53                ; push ebx (this)
-    call jit_emit_byte
-
-    mov al, 0x8B                ; mov eax, [ebx + 4]
-    call jit_emit_byte
-    mov al, 0x43
-    call jit_emit_byte
-    mov al, 0x04
-    call jit_emit_byte
-
-    mov al, 0xFF                ; call dword [eax + offset]
-    call jit_emit_byte
-    mov al, 0x50
-    call jit_emit_byte
-    mov al, cl                  ; Vtable offset
-    call jit_emit_byte
-    ret
+jit_op_invokespecial:
+    jmp jit_op_invokestatic
 
 ; Opcode 0xB9: invokeinterface <index_16bit, count, 0>
 jit_op_invokeinterface:
-    add esi, 2                  ; Consumir 2 bytes de CP Index
-    inc esi                     ; Consumir byte 'count'
-    inc esi                     ; Consumir byte 0 de relleno
+    add esi, 2                  ; Consumir 2 bytes de CP Index    
     jmp jit_op_invokevirtual    ; Reorganizar mediante vtable directa
 
 ; Opcode 0xBA: invokedynamic <index_16bit, 0, 0>
@@ -881,23 +974,21 @@ jit_op_multianewarray:
     inc esi
     jmp jit_op_newarray         ; Redirigir la asignación base
 	
-; Opcode 0xB7: invokespecial <method_index_16bit>
-jit_op_invokespecial:
-    add esi, 2                  ; Ignorar índice del CP (Constructor vacío Object.<init>)
-    ; Para constructores base simples, no se requiere emitir nada a nivel x86 (NOP)
-    ret
 	
 ; Opcode 0xB8: invokestatic
 jit_op_invokestatic:
-    push esi                    ; Preservar ESI
+    push esi
     movzx eax, byte [esi]
     inc esi
     movzx ebx, byte [esi]
     inc esi
     shl eax, 8
-    or eax, ebx                 ; EAX = CP Index del Methodref
+    or eax, ebx                 ; EAX = CP Index
 
-    ; Protección contra llamadas sin Constant Pool cargada (evita colapso en Phase 1-6)
+    ; Guardar CP_INDEX en la pila
+    push eax
+
+    ; Protección contra llamadas sin Constant Pool cargada
     mov ebx, [cp_base_ptr]
     test ebx, ebx
     jz .dispatch_syscall
@@ -906,7 +997,7 @@ jit_op_invokestatic:
     test ebx, ebx
     jz .dispatch_syscall
 
-    ; Extraer Class Index
+    ; Extraer Class Index 
     movzx eax, word [ebx + 1]
     xchg al, ah
     mov ebx, [cp_offsets + eax * 4]
@@ -921,20 +1012,38 @@ jit_op_invokestatic:
     jz .dispatch_syscall
     add ebx, 3                  ; Saltar Tag(1B) y Length(2B)
 
-    ; Comprobar si la clase es 'kernel/Native' (Syscall)
-    cmp dword [ebx], 0x6E72656B ; "kern" en ASCII
+    ; Comprobar si la clase es 'kernel/Native' (Syscall)  
+    cmp dword [ebx], 0x6E72656B     ; "kern"
+    jne .dispatch_trampoline
+    cmp dword [ebx + 4], 0x4E2F6C65 ; "el/N"
+    jne .dispatch_trampoline
+    cmp dword [ebx + 8], 0x76697461 ; "ativ"
     je .dispatch_syscall
 
-    ; --- RUTA B: SUBMÉTODO JAVA LOCAL ---
+.dispatch_trampoline:
+    ; Ruta B: Submétodo Java local
+    pop edx                     ; Recuperar CP_INDEX en EDX
     pop esi                     ; Restaurar ESI
     add esi, 2                  ; Consumir 2 bytes del CP Index
 
-    ; Para submétodos estáticos internos, emitir NOP para preservar pila
-    mov al, 0x90
+    ; Emitir: mov eax, <CP_Index>
+    mov al, 0xB8
     call jit_emit_byte
-    ret
+    mov eax, edx                ; Usar el CP_Index correcto
+    call jit_emit_dword
 
+    ; Emitir: call rel32 jit_runtime_trampoline
+    mov al, 0xE8
+    call jit_emit_byte
+    mov eax, jit_runtime_trampoline
+    mov ebx, [jit_buffer_ptr]
+    add ebx, 4
+    sub eax, ebx
+    call jit_emit_dword
+    ret
+    
 .dispatch_syscall:
+    add esp, 4                  ; Descartar el CP_INDEX guardad
     pop esi                     ; Restaurar ESI
     add esi, 2                  ; Consumir 2 bytes del CP Index
 
@@ -1052,9 +1161,9 @@ jit_op_aload:
     movzx ebx, byte [esi]       ; Leer índice de variable local
     inc esi                     ; Consumir byte de índice
 
-    inc ebx
-    shl ebx, 2
-    neg ebx                     ; EBX = -((index + 1) * 4)
+    shl ebx, 2                  ; EBX = index * 4
+    add ebx, 16                 ; EBX = (index * 4) + 16
+    neg ebx                     ; EBX = Offset negativo en EBP
 
     mov al, 0x8B                ; mov eax, [ebp + disp8]
     call jit_emit_byte
@@ -1071,18 +1180,13 @@ jit_op_aload:
 jit_op_iload_0:
 jit_op_aload_0:
 jit_op_fload_0:
-    cmp dword [loop_start_addr], 0
-    jne .skip_mark
-    mov eax, [jit_buffer_ptr]
-    mov [loop_start_addr], eax
-.skip_mark:
     mov al, 0x8B                ; mov eax, [ebp - 16]
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF0
+    mov al, 0xF0                ; -16
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0x50                
     call jit_emit_byte
     ret
 
@@ -1090,39 +1194,39 @@ jit_op_fload_0:
 jit_op_iload_1:
 jit_op_aload_1:
 jit_op_fload_1:
-    mov al, 0x8B                ; mov eax, [ebp - 8]
+    mov al, 0x8B                ; mov eax, [ebp - 20]
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF8
+    mov al, 0xEC                ; -20
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0x50                
     call jit_emit_byte
     ret
 
 jit_op_iload_2:
 jit_op_aload_2:
 jit_op_fload_2:
-    mov al, 0x8B                ; mov eax, [ebp - 12]
+    mov al, 0x8B                ; mov eax, [ebp - 24]
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF4
+    mov al, 0xE8                ; -24
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0x50                
     call jit_emit_byte
     ret
 
 jit_op_iload_3:
 jit_op_aload_3:
 jit_op_fload_3:
-    mov al, 0x8B                ; mov eax, [ebp - 16]
+    mov al, 0x8B                ; mov eax, [ebp - 28]
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF0
+    mov al, 0xE4                ; -28
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0x50                
     call jit_emit_byte
     ret
 	
@@ -1130,12 +1234,13 @@ jit_op_fload_3:
 ; Opcode 0x3A: astore <index_8bit>
 jit_op_istore:
 jit_op_astore:
-    movzx ebx, byte [esi]       ; Leer índice de variable local
-    inc esi                     ; Consumir byte de índice
+jit_op_fstore:
+    movzx ebx, byte [esi]       
+    inc esi                     
 
-    inc ebx
-    shl ebx, 2
-    neg ebx                     ; EBX = -((index + 1) * 4)
+    shl ebx, 2                  
+    add ebx, 16                 
+    neg ebx                     
 
     mov al, 0x58                ; pop eax
     call jit_emit_byte
@@ -1143,33 +1248,33 @@ jit_op_astore:
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, bl                  ; Offset EBP de la variable local
+    mov al, bl                  
     call jit_emit_byte
     ret
 	
 jit_op_iload_4:
 jit_op_aload_4:
 jit_op_fload_4:
-    mov al, 0x8B                ; mov eax, [ebp - 20]
+    mov al, 0x8B                ; mov eax, [ebp - 32]
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xEC                ; -20 en complemento a dos (0xEC)
+    mov al, 0xE0                ; -32
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0x50                
     call jit_emit_byte
     ret
 
 jit_op_iload_5:
 jit_op_aload_5:
 jit_op_fload_5:
-    mov al, 0x8B                ; mov eax, [ebp - 24]
+    mov al, 0x8B                ; mov eax, [ebp - 36]
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xE8                ; -24 en complemento a dos (0xE8)
+    mov al, 0xDC                ; -36
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0x50                
     call jit_emit_byte
     ret
 
@@ -1178,85 +1283,97 @@ jit_op_fload_5:
 ; Opcode 0x26: dload_0
 jit_op_lload_0:
 jit_op_dload_0:
-    mov al, 0x8B                ; mov eax, [ebp - 4] (parte alta)
+    ; Alta: [ebp - 16] (0xF0)
+    mov al, 0x8B                
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xFC
+    mov al, 0xF0
+    call jit_emit_byte
+    mov al, 0x50                
+    call jit_emit_byte
+    ; Baja: [ebp - 20] (0xEC)
+    mov al, 0x8B                
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xEC
+    call jit_emit_byte
+    mov al, 0x50                
+    call jit_emit_byte
+    ret
+
+; Opcode 0x21: lload_1
+; Opcode 0x27: dload_1
+jit_op_lload_1:
+jit_op_dload_1:
+    ; Cargar parte Alta: [ebp - 24] (0xE8)
+    mov al, 0x8B                
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xE8
     call jit_emit_byte
     mov al, 0x50                ; push eax
     call jit_emit_byte
-    mov al, 0x8B                ; mov eax, [ebp - 8] (parte baja)
+    
+    ; Cargar parte Baja: [ebp - 28] (0xE4)
+    mov al, 0x8B                
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF8
+    mov al, 0xE4
     call jit_emit_byte
     mov al, 0x50                ; push eax
     call jit_emit_byte
     ret
 
-; Opcode 0x21: lload_1 -> Carga [ebp - 8] y [ebp - 12]
-jit_op_lload_1:
-    mov al, 0x8B                ; mov eax, [ebp - 8]
+; Opcode 0x40: lstore_1
+jit_op_lstore_1:
+    ; Guardar parte Baja (pop): [ebp - 28] (0xE4)
+    mov al, 0x58                ; pop eax
+    call jit_emit_byte
+    mov al, 0x89                
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF8
+    mov al, 0xE4
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    
+    ; Guardar parte Alta (pop): [ebp - 24] (0xE8)
+    mov al, 0x58                ; pop eax
     call jit_emit_byte
-    mov al, 0x8B                ; mov eax, [ebp - 12]
+    mov al, 0x89                
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF4
-    call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, 0xE8
     call jit_emit_byte
     ret
 
 ; almacenamiento de variables long (64-BIT) 
 ; Opcode 0x3F: lstore_0 -> Guarda en [ebp - 8] y [ebp - 4]
 jit_op_lstore_0:
-    mov al, 0x58                ; pop eax (parte baja)
+    ; Baja (pop): [ebp - 20]
+    mov al, 0x58                
     call jit_emit_byte
-    mov al, 0x89                ; mov [ebp - 8], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, 0xF8
-    call jit_emit_byte
-    mov al, 0x58                ; pop eax (parte alta)
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp - 4], eax
+    mov al, 0x89                
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xFC
+    mov al, 0xEC
+    call jit_emit_byte
+    ; Alta (pop): [ebp - 16]
+    mov al, 0x58                
+    call jit_emit_byte
+    mov al, 0x89                
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xF0
     call jit_emit_byte
     ret
 
-; Opcode 0x40: lstore_1 -> Guarda en [ebp - 12] y [ebp - 8]
-jit_op_lstore_1:
-    mov al, 0x58                ; pop eax (parte baja)
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp - 12], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, 0xF4
-    call jit_emit_byte
-    mov al, 0x58                ; pop eax (parte alta)
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp - 8], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, 0xF8
-    call jit_emit_byte
-    ret
-	
 ; almacenamiento de variables (istore / astore) 
 jit_op_istore_0:
 jit_op_astore_0:
@@ -1266,67 +1383,67 @@ jit_op_astore_0:
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF0
+    mov al, 0xF0                ; -16
     call jit_emit_byte
     ret
 	
 jit_op_istore_1:
 jit_op_astore_1:
-    mov al, 0x58                ; pop eax
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp - 8], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, 0xF8
-    call jit_emit_byte
-    ret
-
-jit_op_istore_2:
-jit_op_astore_2:
-    mov al, 0x58                ; pop eax
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp - 12], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, 0xF4
-    call jit_emit_byte
-    ret
-
-jit_op_istore_3:
-jit_op_astore_3:
-    mov al, 0x58                ; pop eax
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp - 16], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, 0xF0
-    call jit_emit_byte
-    ret
-
-jit_op_istore_4:
-jit_op_astore_4:
-    mov al, 0x58                ; pop eax
+    mov al, 0x58                
     call jit_emit_byte
     mov al, 0x89                ; mov [ebp - 20], eax
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xEC
+    mov al, 0xEC                ; -20
     call jit_emit_byte
     ret
 
-jit_op_istore_5:
-jit_op_astore_5:
-    mov al, 0x58                ; pop eax
+jit_op_istore_2:
+jit_op_astore_2:
+    mov al, 0x58                
     call jit_emit_byte
     mov al, 0x89                ; mov [ebp - 24], eax
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xE8
+    mov al, 0xE8                ; -24
+    call jit_emit_byte
+    ret
+
+jit_op_istore_3:
+jit_op_astore_3:
+    mov al, 0x58                
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 28], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xE4                ; -28
+    call jit_emit_byte
+    ret
+
+jit_op_istore_4:
+jit_op_astore_4:
+    mov al, 0x58                
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 32], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xE0                ; -32
+    call jit_emit_byte
+    ret
+
+jit_op_istore_5:
+jit_op_astore_5:
+    mov al, 0x58                
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp - 36], eax
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov al, 0xDC                ; -36
     call jit_emit_byte
     ret
     
@@ -2012,11 +2129,13 @@ jit_op_lload:
 jit_op_dload:
     movzx ebx, byte [esi]
     inc esi
-    inc ebx
+    
     shl ebx, 2
-    neg ebx
-    ; Cargar parte alta
-    mov al, 0x8B                ; mov eax, [ebp + disp8] (High)
+    add ebx, 16
+    neg ebx                     ; EBX = Offset negativo de la parte alta
+    
+    ; Cargar parte alta (índice)
+    mov al, 0x8B                ; mov eax, [ebp + disp8]
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
@@ -2024,35 +2143,48 @@ jit_op_dload:
     call jit_emit_byte
     mov al, 0x50                ; push eax
     call jit_emit_byte
-    ; Cargar parte baja
-    mov al, 0x8B                ; mov eax, [ebp + disp8 - 4] (Low)
+    
+    ; Cargar parte baja (índice + 1)
+    mov al, 0x8B                ; mov eax, [ebp + disp8]
+    call jit_emit_byte
+    mov al, 0x45
+    call jit_emit_byte
+    mov eax, ebx
+    sub eax, 4                  ; Offset para parte baja (-4 bytes más profundo)
+    call jit_emit_byte
+    mov al, 0x50                ; push eax
+    call jit_emit_byte
+    ret
+
+; Almacenamiento de variables de 64 bits (índice variable)
+jit_op_lstore:
+jit_op_dstore:
+    movzx ebx, byte [esi]
+    inc esi
+    
+    shl ebx, 2
+    add ebx, 16
+    neg ebx
+    
+    ; Guardar parte baja primero (porque se desapila el último valor empujado)
+    mov al, 0x58                ; pop eax (Low)
+    call jit_emit_byte
+    mov al, 0x89                ; mov [ebp + disp8], eax
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
     mov eax, ebx
     sub eax, 4                  ; Offset para parte baja
     call jit_emit_byte
-    mov al, 0x50                ; push eax
+    
+    ; Guardar parte alta
+    mov al, 0x58                ; pop eax (High)
     call jit_emit_byte
-    ret
-
-; Opcode 0x27: dload_1
-jit_op_dload_1:
-    mov al, 0x8B                ; mov eax, [ebp - 8]
+    mov al, 0x89                ; mov [ebp + disp8], eax
     call jit_emit_byte
     mov al, 0x45
     call jit_emit_byte
-    mov al, 0xF8
-    call jit_emit_byte
-    mov al, 0x50                ; push eax
-    call jit_emit_byte
-    mov al, 0x8B                ; mov eax, [ebp - 12]
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, 0xF4
-    call jit_emit_byte
-    mov al, 0x50                ; push eax
+    mov al, bl
     call jit_emit_byte
     ret
 
@@ -2131,38 +2263,6 @@ jit_op_caload:
     mov al, 0x4B
     call jit_emit_byte
     mov al, 0x50                ; push eax
-    call jit_emit_byte
-    ret
-
-; Opcodes 0x37 (lstore), 0x38 (fstore), 0x39 (dstore)
-jit_op_fstore:
-    jmp jit_op_istore
-
-jit_op_lstore:
-jit_op_dstore:
-    movzx ebx, byte [esi]
-    inc esi
-    inc ebx
-    shl ebx, 2
-    neg ebx
-    ; Guardar parte baja
-    mov al, 0x58                ; pop eax (Low)
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp + disp8 - 4], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov eax, ebx
-    sub eax, 4                  ; Offset para parte baja
-    call jit_emit_byte
-    ; Guardar parte alta
-    mov al, 0x58                ; pop eax (High)
-    call jit_emit_byte
-    mov al, 0x89                ; mov [ebp + disp8], eax
-    call jit_emit_byte
-    mov al, 0x45
-    call jit_emit_byte
-    mov al, bl
     call jit_emit_byte
     ret
 
